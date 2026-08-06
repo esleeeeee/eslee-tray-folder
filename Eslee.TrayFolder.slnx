@@ -1,0 +1,10 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Eslee.TrayFolder/Eslee.TrayFolder.csproj" />
+    <Project Path="src/Eslee.TrayIntegration/Eslee.TrayIntegration.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Eslee.TrayFolder.Tests/Eslee.TrayFolder.Tests.csproj" />
+    <Project Path="tests/Eslee.TrayIntegration.Tests/Eslee.TrayIntegration.Tests.csproj" />
+  </Folder>
+</Solution>

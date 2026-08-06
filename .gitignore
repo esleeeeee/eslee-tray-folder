@@ -1,0 +1,13 @@
+.dotnet/
+.nuget/
+.vs/
+**/bin/
+**/obj/
+artifacts/
+TestResults/
+logs/
+config.json
+config.corrupt-*.json
+*.log
+*.user
+*.suo

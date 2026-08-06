@@ -1,0 +1,53 @@
+<Window x:Class="Eslee.TrayFolder.UI.SettingsWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Tray Folder 설정"
+        Width="610"
+        Height="330"
+        MinWidth="560"
+        MinHeight="300"
+        WindowStartupLocation="CenterScreen"
+        ShowInTaskbar="True"
+        Closing="OnClosing">
+    <Grid Margin="26">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <TextBlock FontSize="23" FontWeight="SemiBold" Text="Tray Folder 설정" />
+        <TextBlock Grid.Row="1"
+                   Margin="0,8,0,20"
+                   Foreground="#FF667085"
+                   Text="현재 단계에서는 AutoPower 실행 파일만 등록합니다. Hosted 모드는 아직 전환하지 않습니다."
+                   TextWrapping="Wrap" />
+
+        <Grid Grid.Row="2">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <StackPanel>
+                <TextBlock Margin="0,0,0,6" FontWeight="SemiBold" Text="AutoPower 실행 파일" />
+                <TextBox x:Name="ExecutablePathTextBox" Height="31" VerticalContentAlignment="Center" />
+            </StackPanel>
+            <Button Grid.Column="1" Margin="10,23,0,0" Padding="13,5" Content="찾아보기" Click="OnBrowseClick" />
+            <Button Grid.Column="2" Margin="8,23,0,0" Padding="13,5" Content="자동 탐색" Click="OnDiscoverClick" />
+        </Grid>
+
+        <TextBlock x:Name="MessageText"
+                   Grid.Row="3"
+                   Margin="0,13,0,0"
+                   Foreground="#FFC43D3D"
+                   TextWrapping="Wrap" />
+
+        <StackPanel Grid.Row="4" HorizontalAlignment="Right" Orientation="Horizontal">
+            <Button Margin="0,0,8,0" Padding="18,7" Content="닫기" Click="OnCloseClick" />
+            <Button Padding="18,7" Content="저장" IsDefault="True" Click="OnSaveClick" />
+        </StackPanel>
+    </Grid>
+</Window>

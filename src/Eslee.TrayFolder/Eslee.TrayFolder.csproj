@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <UseWindowsForms>true</UseWindowsForms>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
+    <AssemblyName>Eslee.TrayFolder</AssemblyName>
+    <RootNamespace>Eslee.TrayFolder</RootNamespace>
+    <Product>Tray Folder</Product>
+    <Title>Tray Folder</Title>
+    <Description>eslee 프로그램을 위한 전용 트레이 폴더</Description>
+    <Version>0.1.0</Version>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Eslee.TrayIntegration\Eslee.TrayIntegration.csproj" />
+  </ItemGroup>
+</Project>
