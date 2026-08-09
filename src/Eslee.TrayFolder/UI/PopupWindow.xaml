@@ -3,7 +3,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="Tray Folder"
         Width="360"
-        Height="278"
+        SizeToContent="Height"
         WindowStyle="None"
         ResizeMode="NoResize"
         AllowsTransparency="True"
@@ -49,46 +49,7 @@
 
             <Border Grid.Row="1" Background="#FFE5E9F0" />
 
-            <UniformGrid Grid.Row="2" Margin="0,18,0,0" Columns="3" Rows="1">
-                <Button x:Name="AutoPowerButton"
-                        Width="96"
-                        Height="142"
-                        Padding="8"
-                        HorizontalAlignment="Left"
-                        VerticalAlignment="Top"
-                        Background="Transparent"
-                        BorderThickness="0"
-                        Click="OnAutoPowerClick"
-                        MouseRightButtonUp="OnAutoPowerRightClick">
-                    <StackPanel HorizontalAlignment="Center">
-                        <Border Width="68" Height="68" CornerRadius="18" Background="#FFEAF2FF">
-                            <Grid>
-                                <TextBlock x:Name="FallbackIconText"
-                                           HorizontalAlignment="Center"
-                                           VerticalAlignment="Center"
-                                           FontSize="30"
-                                           FontWeight="Bold"
-                                           Foreground="#FF2C6BED"
-                                           Text="A" />
-                                <Image x:Name="AppIconImage" Width="46" Height="46" Stretch="Uniform" />
-                            </Grid>
-                        </Border>
-                        <TextBlock x:Name="AppNameText"
-                                   Margin="0,9,0,0"
-                                   MaxWidth="90"
-                                   HorizontalAlignment="Center"
-                                   FontSize="13"
-                                   FontWeight="SemiBold"
-                                   Text="AutoPower"
-                                   TextAlignment="Center"
-                                   TextTrimming="CharacterEllipsis" />
-                        <StackPanel Margin="0,5,0,0" HorizontalAlignment="Center" Orientation="Horizontal">
-                            <Ellipse x:Name="StatusDot" Width="7" Height="7" Margin="0,0,5,0" Fill="#FF9AA3B2" />
-                            <TextBlock x:Name="StatusText" FontSize="11" Foreground="#FF667085" Text="확인 중" />
-                        </StackPanel>
-                    </StackPanel>
-                </Button>
-            </UniformGrid>
+            <UniformGrid x:Name="AppsGrid" Grid.Row="2" Margin="0,18,0,0" Columns="3" />
         </Grid>
     </Border>
 </Window>

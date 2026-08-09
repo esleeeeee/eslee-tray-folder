@@ -23,6 +23,42 @@ public sealed class TrayFolderConfig
                 Order = 0,
                 Enabled = true,
             },
+            new TrayAppConfig
+            {
+                AppId = "eslee.folderlocker",
+                DisplayName = "Folder Locker",
+                ExecutablePath = string.Empty,
+                TrayMode = "standalone",
+                Order = 1,
+                Enabled = true,
+            },
+            new TrayAppConfig
+            {
+                AppId = "eslee.downloadrouter",
+                DisplayName = "Download Router",
+                ExecutablePath = string.Empty,
+                TrayMode = "standalone",
+                Order = 2,
+                Enabled = true,
+            },
+            new TrayAppConfig
+            {
+                AppId = "eslee.onekey",
+                DisplayName = "OneKey",
+                ExecutablePath = string.Empty,
+                TrayMode = "standalone",
+                Order = 3,
+                Enabled = true,
+            },
+            new TrayAppConfig
+            {
+                AppId = "eslee.quicksend",
+                DisplayName = "QuickSend",
+                ExecutablePath = string.Empty,
+                TrayMode = "standalone",
+                Order = 4,
+                Enabled = true,
+            },
         ],
     };
 }

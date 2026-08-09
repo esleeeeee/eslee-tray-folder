@@ -7,15 +7,23 @@ using System.Windows.Interop;
 using System.Windows.Media;
 using Eslee.TrayFolder.Native;
 using Eslee.TrayIntegration;
+using Ellipse = System.Windows.Shapes.Ellipse;
 using FormsScreen = System.Windows.Forms.Screen;
 
 namespace Eslee.TrayFolder.UI;
 
+/// <summary>앱 타일 우클릭 메뉴에서 항목이 클릭됐을 때의 정보입니다.</summary>
+public sealed record AppMenuActionRequest(string AppId, string ActionId);
+
 public partial class PopupWindow : Window
 {
+    private static readonly SolidColorBrush RunningBrush = new(Color.FromRgb(34, 171, 105));
+    private static readonly SolidColorBrush StoppedBrush = new(Color.FromRgb(154, 163, 178));
+    private static readonly SolidColorBrush UnknownBrush = new(Color.FromRgb(244, 168, 37));
+
+    private readonly Dictionary<string, AppTile> _tiles = new(StringComparer.OrdinalIgnoreCase);
     private bool _allowClose;
-    private bool _busy;
-    private ContextMenu? _autoPowerMenu;
+    private ContextMenu? _appMenu;
 
     public PopupWindow()
     {
@@ -27,67 +35,98 @@ public partial class PopupWindow : Window
 
     public event EventHandler? SettingsRequested;
 
-    public event EventHandler? AutoPowerRequested;
+    /// <summary>타일 좌클릭: 해당 앱의 메인 동작(창 열기/실행)을 요청합니다.</summary>
+    public event EventHandler<string>? AppRequested;
 
-    public event EventHandler? AutoPowerMenuRequested;
+    /// <summary>타일 우클릭: 해당 앱의 트레이 메뉴 표시를 요청합니다.</summary>
+    public event EventHandler<string>? AppMenuRequested;
 
-    public event EventHandler<string>? AutoPowerMenuActionRequested;
+    public event EventHandler<AppMenuActionRequest>? AppMenuActionRequested;
 
-    public void SetApp(string displayName, ImageSource? icon)
+    /// <summary>
+    /// 팝업이 화면에 표시된 회차를 구분하는 토큰입니다. 우클릭 시점의 값을 캡처해
+    /// <see cref="ShowAppMenu"/>에 되돌려주면, 응답이 늦게 도착했을 때 그 사이
+    /// 팝업이 닫혔다 다시 열렸어도 다른 회차에 유령 메뉴가 뜨지 않습니다.
+    /// </summary>
+    public int VisibleSession { get; private set; }
+
+    /// <summary>표시할 앱 타일 목록을 다시 만듭니다. 순서대로 3열 격자에 배치됩니다.</summary>
+    public void SetApps(IReadOnlyList<(string AppId, string DisplayName)> apps)
     {
-        AppNameText.Text = displayName;
-        AppIconImage.Source = icon;
-        AppIconImage.Visibility = icon is null ? Visibility.Collapsed : Visibility.Visible;
-        FallbackIconText.Visibility = icon is null ? Visibility.Visible : Visibility.Collapsed;
+        AppsGrid.Children.Clear();
+        _tiles.Clear();
+        foreach (var (appId, displayName) in apps)
+        {
+            var tile = BuildTile(appId, displayName);
+            _tiles[appId] = tile;
+            AppsGrid.Children.Add(tile.Button);
+        }
     }
 
-    public void SetRunningState(bool? isRunning)
+    public void SetApp(string appId, string displayName, ImageSource? icon)
     {
-        StatusText.Text = isRunning switch
+        if (!_tiles.TryGetValue(appId, out var tile))
+        {
+            return;
+        }
+
+        tile.NameText.Text = displayName;
+        tile.FallbackIconText.Text = displayName.Length > 0 ? displayName[..1] : "?";
+        tile.IconImage.Source = icon;
+        tile.IconImage.Visibility = icon is null ? Visibility.Collapsed : Visibility.Visible;
+        tile.FallbackIconText.Visibility = icon is null ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    public void SetRunningState(string appId, bool? isRunning)
+    {
+        if (!_tiles.TryGetValue(appId, out var tile))
+        {
+            return;
+        }
+
+        tile.StatusText.Text = isRunning switch
         {
             true => "실행 중",
             false => "실행 안 됨",
             null => "확인 중",
         };
-        StatusDot.Fill = new SolidColorBrush(isRunning switch
+        tile.StatusDot.Fill = isRunning switch
         {
-            true => Color.FromRgb(34, 171, 105),
-            false => Color.FromRgb(154, 163, 178),
-            null => Color.FromRgb(244, 168, 37),
-        });
+            true => RunningBrush,
+            false => StoppedBrush,
+            null => UnknownBrush,
+        };
     }
 
-    /// <summary>
-    /// 팝업이 화면에 표시된 회차를 구분하는 토큰입니다. 우클릭 시점의 값을 캡처해
-    /// <see cref="ShowAutoPowerMenu"/>에 되돌려주면, 응답이 늦게 도착했을 때 그 사이
-    /// 팝업이 닫혔다 다시 열렸어도 다른 회차에 유령 메뉴가 뜨지 않습니다.
-    /// </summary>
-    public int VisibleSession { get; private set; }
-
-    public void SetBusy(bool isBusy)
+    public void SetBusy(string appId, bool isBusy)
     {
-        // 좌클릭(앱 열기)만 막고 우클릭 메뉴는 busy 중에도 열 수 있어야 하므로
+        if (!_tiles.TryGetValue(appId, out var tile))
+        {
+            return;
+        }
+
+        // 좌클릭(메인 동작)만 막고 우클릭 메뉴는 busy 중에도 열 수 있어야 하므로
         // 버튼을 비활성화하지 않습니다(비활성 요소는 우클릭 이벤트도 삼킵니다).
-        _busy = isBusy;
-        AutoPowerButton.Opacity = isBusy ? 0.55 : 1.0;
+        tile.Busy = isBusy;
+        tile.Button.Opacity = isBusy ? 0.55 : 1.0;
     }
 
     /// <summary>
-    /// AutoPower 타일 우클릭 메뉴를 커서 위치에 표시합니다. 항목 클릭 시
-    /// <see cref="AutoPowerMenuActionRequested"/>로 action id를 전달합니다.
+    /// 앱 타일 우클릭 메뉴를 커서 위치에 표시합니다. 항목 클릭 시
+    /// <see cref="AppMenuActionRequested"/>로 앱과 action id를 전달합니다.
     /// </summary>
-    public void ShowAutoPowerMenu(IReadOnlyList<TrayMenuItem> items, int visibleSession)
+    public void ShowAppMenu(string appId, IReadOnlyList<TrayMenuItem> items, int visibleSession)
     {
-        if (!IsVisible || visibleSession != VisibleSession)
+        if (!IsVisible || visibleSession != VisibleSession || !_tiles.TryGetValue(appId, out var tile))
         {
             // 메뉴 데이터를 기다리는 사이 팝업이 닫혔거나 다시 열린 경우입니다.
             return;
         }
 
-        CloseAutoPowerMenu();
+        CloseAppMenu();
         var menu = new ContextMenu
         {
-            PlacementTarget = AutoPowerButton,
+            PlacementTarget = tile.Button,
             Placement = PlacementMode.MousePoint,
         };
         foreach (var item in items)
@@ -102,17 +141,19 @@ public partial class PopupWindow : Window
             {
                 Header = item.Text,
                 IsEnabled = item.Enabled,
+                IsChecked = item.Checked,
             };
             if (item.Id is { Length: > 0 } actionId && item.Enabled)
             {
-                menuItem.Click += (_, _) => AutoPowerMenuActionRequested?.Invoke(this, actionId);
+                menuItem.Click += (_, _) =>
+                    AppMenuActionRequested?.Invoke(this, new AppMenuActionRequest(appId, actionId));
             }
 
             menu.Items.Add(menuItem);
         }
 
-        menu.Closed += OnAutoPowerMenuClosed;
-        _autoPowerMenu = menu;
+        menu.Closed += OnAppMenuClosed;
+        _appMenu = menu;
         menu.IsOpen = true;
     }
 
@@ -133,8 +174,112 @@ public partial class PopupWindow : Window
     public void ClosePermanently()
     {
         _allowClose = true;
-        CloseAutoPowerMenu();
+        CloseAppMenu();
         Close();
+    }
+
+    private AppTile BuildTile(string appId, string displayName)
+    {
+        var fallbackIcon = new TextBlock
+        {
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+            FontSize = 30,
+            FontWeight = FontWeights.Bold,
+            Foreground = new SolidColorBrush(Color.FromRgb(44, 107, 237)),
+            Text = displayName.Length > 0 ? displayName[..1] : "?",
+        };
+        var iconImage = new Image
+        {
+            Width = 46,
+            Height = 46,
+            Stretch = Stretch.Uniform,
+            Visibility = Visibility.Collapsed,
+        };
+        var iconGrid = new Grid();
+        iconGrid.Children.Add(fallbackIcon);
+        iconGrid.Children.Add(iconImage);
+        var iconBorder = new Border
+        {
+            Width = 68,
+            Height = 68,
+            CornerRadius = new CornerRadius(18),
+            Background = new SolidColorBrush(Color.FromRgb(234, 242, 255)),
+            Child = iconGrid,
+        };
+
+        var nameText = new TextBlock
+        {
+            Margin = new Thickness(0, 9, 0, 0),
+            MaxWidth = 90,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            FontSize = 13,
+            FontWeight = FontWeights.SemiBold,
+            Text = displayName,
+            TextAlignment = TextAlignment.Center,
+            TextTrimming = TextTrimming.CharacterEllipsis,
+        };
+
+        var statusDot = new Ellipse
+        {
+            Width = 7,
+            Height = 7,
+            Margin = new Thickness(0, 0, 5, 0),
+            Fill = StoppedBrush,
+        };
+        var statusText = new TextBlock
+        {
+            FontSize = 11,
+            Foreground = new SolidColorBrush(Color.FromRgb(102, 112, 133)),
+            Text = "확인 중",
+        };
+        var statusPanel = new StackPanel
+        {
+            Margin = new Thickness(0, 5, 0, 0),
+            HorizontalAlignment = HorizontalAlignment.Center,
+            Orientation = Orientation.Horizontal,
+        };
+        statusPanel.Children.Add(statusDot);
+        statusPanel.Children.Add(statusText);
+
+        var contentPanel = new StackPanel { HorizontalAlignment = HorizontalAlignment.Center };
+        contentPanel.Children.Add(iconBorder);
+        contentPanel.Children.Add(nameText);
+        contentPanel.Children.Add(statusPanel);
+
+        var button = new Button
+        {
+            Width = 96,
+            Height = 142,
+            Padding = new Thickness(8),
+            HorizontalAlignment = HorizontalAlignment.Left,
+            VerticalAlignment = VerticalAlignment.Top,
+            Background = Brushes.Transparent,
+            BorderThickness = new Thickness(0),
+            Content = contentPanel,
+        };
+        var tile = new AppTile
+        {
+            Button = button,
+            IconImage = iconImage,
+            FallbackIconText = fallbackIcon,
+            NameText = nameText,
+            StatusDot = statusDot,
+            StatusText = statusText,
+        };
+        button.Click += (_, _) =>
+        {
+            if (!tile.Busy)
+            {
+                AppRequested?.Invoke(this, appId);
+            }
+        };
+        button.MouseRightButtonUp += (_, e) =>
+        {
+            e.Handled = true;
+            AppMenuRequested?.Invoke(this, appId);
+        };
+        return tile;
     }
 
     private void PositionAt(PixelPoint anchor)
@@ -168,30 +313,14 @@ public partial class PopupWindow : Window
         SettingsRequested?.Invoke(this, EventArgs.Empty);
     }
 
-    private void OnAutoPowerClick(object sender, RoutedEventArgs e)
-    {
-        if (_busy)
-        {
-            return;
-        }
-
-        AutoPowerRequested?.Invoke(this, EventArgs.Empty);
-    }
-
-    private void OnAutoPowerRightClick(object sender, MouseButtonEventArgs e)
-    {
-        e.Handled = true;
-        AutoPowerMenuRequested?.Invoke(this, EventArgs.Empty);
-    }
-
-    private void OnAutoPowerMenuClosed(object sender, RoutedEventArgs e)
+    private void OnAppMenuClosed(object sender, RoutedEventArgs e)
     {
         if (sender is ContextMenu menu)
         {
-            menu.Closed -= OnAutoPowerMenuClosed;
-            if (ReferenceEquals(_autoPowerMenu, menu))
+            menu.Closed -= OnAppMenuClosed;
+            if (ReferenceEquals(_appMenu, menu))
             {
-                _autoPowerMenu = null;
+                _appMenu = null;
             }
         }
 
@@ -208,16 +337,16 @@ public partial class PopupWindow : Window
         VisibleSession++;
         if (!IsVisible)
         {
-            CloseAutoPowerMenu();
+            CloseAppMenu();
         }
     }
 
-    private void CloseAutoPowerMenu()
+    private void CloseAppMenu()
     {
-        if (_autoPowerMenu is { } menu)
+        if (_appMenu is { } menu)
         {
-            menu.Closed -= OnAutoPowerMenuClosed;
-            _autoPowerMenu = null;
+            menu.Closed -= OnAppMenuClosed;
+            _appMenu = null;
             menu.IsOpen = false;
         }
     }
@@ -234,8 +363,8 @@ public partial class PopupWindow : Window
     private void OnDeactivated(object? sender, EventArgs e)
     {
         // 우클릭 메뉴가 포커스를 가져가며 창이 비활성화되므로, 메뉴가 열려 있는
-        // 동안에는 숨기지 않습니다. 메뉴가 닫힐 때 OnAutoPowerMenuClosed가 정리합니다.
-        if (_autoPowerMenu is null)
+        // 동안에는 숨기지 않습니다. 메뉴가 닫힐 때 OnAppMenuClosed가 정리합니다.
+        if (_appMenu is null)
         {
             Hide();
         }
@@ -248,5 +377,22 @@ public partial class PopupWindow : Window
             e.Cancel = true;
             Hide();
         }
+    }
+
+    private sealed class AppTile
+    {
+        public required Button Button { get; init; }
+
+        public required Image IconImage { get; init; }
+
+        public required TextBlock FallbackIconText { get; init; }
+
+        public required TextBlock NameText { get; init; }
+
+        public required Ellipse StatusDot { get; init; }
+
+        public required TextBlock StatusText { get; init; }
+
+        public bool Busy { get; set; }
     }
 }

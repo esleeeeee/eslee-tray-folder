@@ -34,6 +34,40 @@ public static class AutoPowerIdentityPolicy
 
 public sealed class ExecutablePathValidator
 {
+    /// <summary>
+    /// AutoPower 외 앱을 위한 일반 검증입니다. 존재하는 EXE인지만 확인하며,
+    /// 제품 정보 검사는 하지 않습니다.
+    /// </summary>
+    public ExecutableValidationResult ValidateGeneric(string? path, string displayName)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return ExecutableValidationResult.Invalid($"{displayName} 실행 파일 경로를 지정해 주세요.");
+        }
+
+        string normalizedPath;
+        try
+        {
+            normalizedPath = Path.GetFullPath(path.Trim().Trim('"'));
+        }
+        catch (Exception exception) when (exception is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            return ExecutableValidationResult.Invalid("실행 파일 경로 형식이 올바르지 않습니다.");
+        }
+
+        if (!File.Exists(normalizedPath))
+        {
+            return ExecutableValidationResult.Invalid($"지정한 {displayName} 실행 파일이 없습니다: {normalizedPath}");
+        }
+
+        if (!string.Equals(Path.GetExtension(normalizedPath), ".exe", StringComparison.OrdinalIgnoreCase))
+        {
+            return ExecutableValidationResult.Invalid("실행 파일(EXE)을 선택해 주세요.");
+        }
+
+        return new ExecutableValidationResult(true, normalizedPath, null);
+    }
+
     public ExecutableValidationResult ValidateAutoPower(string? path)
     {
         if (string.IsNullOrWhiteSpace(path))

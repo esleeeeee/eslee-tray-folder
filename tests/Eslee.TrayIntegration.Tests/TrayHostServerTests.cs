@@ -33,16 +33,16 @@ public sealed class TrayHostServerTests
                 var registration = await registered.Task.WaitAsync(TestTimeout);
                 Assert.AreEqual("eslee.autopower", registration.AppId);
                 Assert.AreEqual(4321, registration.ProcessId);
-                Assert.IsTrue(server.IsClientConnected);
+                Assert.IsTrue(server.IsClientConnected("eslee.autopower"));
 
-                Assert.IsTrue(await server.SendTrayModeAsync(TrayMode.Hosted, CancellationToken.None));
+                Assert.IsTrue(await server.SendTrayModeAsync("eslee.autopower", TrayMode.Hosted, CancellationToken.None));
                 var modeLine = await reader.ReadLineAsync().WaitAsync(TestTimeout);
                 Assert.IsNotNull(modeLine);
                 StringAssert.Contains(modeLine, "\"set-tray-mode\"");
                 StringAssert.Contains(modeLine, "\"hosted\"");
 
                 var commandTask = server.SendCommandAsync(
-                    TrayHostCommand.Activate, TestTimeout, CancellationToken.None);
+                    "eslee.autopower", TrayHostCommand.Activate, TestTimeout, CancellationToken.None);
                 var commandLine = await reader.ReadLineAsync().WaitAsync(TestTimeout);
                 Assert.IsNotNull(commandLine);
                 var command = TrayPipeProtocol.TryDeserialize(commandLine);
@@ -86,7 +86,7 @@ public sealed class TrayHostServerTests
                 await registered.Task.WaitAsync(TestTimeout);
 
                 // 메뉴 요청: 호스트가 get-menu를 보내고 클라이언트 응답의 items를 돌려받습니다.
-                var menuTask = server.GetMenuAsync(TestTimeout, CancellationToken.None);
+                var menuTask = server.GetMenuAsync("eslee.autopower", TestTimeout, CancellationToken.None);
                 var menuRequestLine = await reader.ReadLineAsync().WaitAsync(TestTimeout);
                 Assert.IsNotNull(menuRequestLine);
                 var menuRequest = TrayPipeProtocol.TryDeserialize(menuRequestLine);
@@ -114,7 +114,8 @@ public sealed class TrayHostServerTests
                 Assert.IsFalse(menu[2].Enabled);
 
                 // 메뉴 액션: action id가 command로 전달되고 결과가 돌아옵니다.
-                var actionTask = server.SendMenuActionAsync("quick-shutdown-1h", TestTimeout, CancellationToken.None);
+                var actionTask = server.SendMenuActionAsync(
+                    "eslee.autopower", "quick-shutdown-1h", TestTimeout, CancellationToken.None);
                 var actionLine = await reader.ReadLineAsync().WaitAsync(TestTimeout);
                 Assert.IsNotNull(actionLine);
                 var action = TrayPipeProtocol.TryDeserialize(actionLine);
@@ -158,7 +159,8 @@ public sealed class TrayHostServerTests
                 await registered.Task.WaitAsync(TestTimeout);
 
                 // 메뉴를 지원하지 않는 구버전 앱은 get-menu를 무시합니다.
-                var menu = await server.GetMenuAsync(TimeSpan.FromMilliseconds(300), CancellationToken.None);
+                var menu = await server.GetMenuAsync(
+                    "eslee.autopower", TimeSpan.FromMilliseconds(300), CancellationToken.None);
                 Assert.IsNull(menu);
             }
         }
@@ -170,7 +172,8 @@ public sealed class TrayHostServerTests
         using var server = new TrayHostServer(CreatePipeName());
         server.Start();
 
-        Assert.IsNull(await server.GetMenuAsync(TimeSpan.FromSeconds(1), CancellationToken.None));
+        Assert.IsNull(await server.GetMenuAsync(
+            "eslee.autopower", TimeSpan.FromSeconds(1), CancellationToken.None));
     }
 
     [TestMethod]
@@ -205,7 +208,7 @@ public sealed class TrayHostServerTests
 
                 Assert.IsNull(line);
                 Assert.IsFalse(registeredRaised);
-                Assert.IsFalse(server.IsClientConnected);
+                Assert.IsFalse(server.IsClientConnected("eslee.autopower"));
             }
         }
     }
@@ -217,10 +220,10 @@ public sealed class TrayHostServerTests
         server.Start();
 
         var result = await server.SendCommandAsync(
-            TrayHostCommand.Activate, TimeSpan.FromSeconds(1), CancellationToken.None);
+            "eslee.autopower", TrayHostCommand.Activate, TimeSpan.FromSeconds(1), CancellationToken.None);
 
         Assert.IsFalse(result.Succeeded);
-        Assert.IsFalse(server.IsClientConnected);
+        Assert.IsFalse(server.IsClientConnected("eslee.autopower"));
     }
 
     [TestMethod]
@@ -253,7 +256,7 @@ public sealed class TrayHostServerTests
         }
 
         Assert.IsTrue(await disconnectedSignal.WaitAsync(TestTimeout));
-        Assert.IsFalse(server.IsClientConnected);
+        Assert.IsFalse(server.IsClientConnected("eslee.autopower"));
 
         var secondClient = CreateClient(pipeName);
         await using (secondClient.ConfigureAwait(false))
@@ -269,6 +272,67 @@ public sealed class TrayHostServerTests
         }
 
         Assert.AreEqual(2, registeredCount);
+    }
+
+    [TestMethod]
+    public async Task RoutesCommandsToTheRegisteredAppAmongMultipleClients()
+    {
+        var pipeName = CreatePipeName();
+        using var server = new TrayHostServer(pipeName);
+        var registeredSignal = new SemaphoreSlim(0);
+        server.ClientRegistered += (_, _) => registeredSignal.Release();
+        server.Start();
+
+        var clientA = CreateClient(pipeName);
+        var clientB = CreateClient(pipeName);
+        await using (clientA.ConfigureAwait(false))
+        await using (clientB.ConfigureAwait(false))
+        {
+            await clientA.ConnectAsync(5000);
+            using var readerA = CreateReader(clientA);
+            var writerA = CreateWriter(clientA);
+            await using (writerA.ConfigureAwait(false))
+            {
+                await writerA.WriteLineAsync(
+                    """{"type":"register","protocolVersion":1,"appId":"app.a","processId":21}""");
+                Assert.IsTrue(await registeredSignal.WaitAsync(TestTimeout));
+
+                await clientB.ConnectAsync(5000);
+                using var readerB = CreateReader(clientB);
+                var writerB = CreateWriter(clientB);
+                await using (writerB.ConfigureAwait(false))
+                {
+                    await writerB.WriteLineAsync(
+                        """{"type":"register","protocolVersion":1,"appId":"app.b","processId":22}""");
+                    Assert.IsTrue(await registeredSignal.WaitAsync(TestTimeout));
+                    Assert.IsTrue(server.IsClientConnected("app.a"));
+                    Assert.IsTrue(server.IsClientConnected("app.b"));
+
+                    // app.b로 보낸 명령은 app.b 연결로만 전달됩니다.
+                    var commandTask = server.SendCommandAsync(
+                        "app.b", TrayHostCommand.Activate, TestTimeout, CancellationToken.None);
+                    var commandLine = await readerB.ReadLineAsync().WaitAsync(TestTimeout);
+                    Assert.IsNotNull(commandLine);
+                    var command = TrayPipeProtocol.TryDeserialize(commandLine);
+                    Assert.IsNotNull(command);
+                    await writerB.WriteLineAsync(TrayPipeProtocol.Serialize(new TrayPipeMessage
+                    {
+                        Type = TrayPipeProtocol.CommandResultType,
+                        Id = command.Id,
+                        Succeeded = true,
+                    }));
+                    var result = await commandTask.WaitAsync(TestTimeout);
+                    Assert.IsTrue(result.Succeeded);
+
+                    // app.a에는 아무 메시지도 도착하지 않았어야 합니다.
+                    var modeToA = server.SendTrayModeAsync("app.a", TrayMode.Hosted, CancellationToken.None);
+                    var lineToA = await readerA.ReadLineAsync().WaitAsync(TestTimeout);
+                    Assert.IsTrue(await modeToA.WaitAsync(TestTimeout));
+                    Assert.IsNotNull(lineToA);
+                    StringAssert.Contains(lineToA, "set-tray-mode");
+                }
+            }
+        }
     }
 
     private static string CreatePipeName() =>
