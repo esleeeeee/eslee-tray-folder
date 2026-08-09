@@ -4,6 +4,9 @@ using Microsoft.Win32;
 
 namespace Eslee.TrayFolder.UI;
 
+/// <summary>설정 창의 저장 버튼이 전달하는 값 묶음입니다. TrayMode는 "hosted" 또는 "standalone"입니다.</summary>
+public sealed record SettingsSaveRequest(string ExecutablePath, string TrayMode);
+
 public partial class SettingsWindow : Window
 {
     private bool _allowClose;
@@ -13,7 +16,7 @@ public partial class SettingsWindow : Window
         InitializeComponent();
     }
 
-    public event EventHandler<string>? SaveRequested;
+    public event EventHandler<SettingsSaveRequest>? SaveRequested;
 
     public event EventHandler? DiscoveryRequested;
 
@@ -21,6 +24,17 @@ public partial class SettingsWindow : Window
     {
         get => ExecutablePathTextBox.Text;
         set => ExecutablePathTextBox.Text = value;
+    }
+
+    public string TrayMode
+    {
+        get => HostedModeRadio.IsChecked == true ? "hosted" : "standalone";
+        set
+        {
+            var hosted = string.Equals(value, "hosted", StringComparison.OrdinalIgnoreCase);
+            HostedModeRadio.IsChecked = hosted;
+            StandaloneModeRadio.IsChecked = !hosted;
+        }
     }
 
     public void ShowMessage(string message, bool isError)
@@ -73,7 +87,7 @@ public partial class SettingsWindow : Window
         DiscoveryRequested?.Invoke(this, EventArgs.Empty);
 
     private void OnSaveClick(object sender, RoutedEventArgs e) =>
-        SaveRequested?.Invoke(this, ExecutablePath);
+        SaveRequested?.Invoke(this, new SettingsSaveRequest(ExecutablePath, TrayMode));
 
     private void OnCloseClick(object sender, RoutedEventArgs e) => Hide();
 
