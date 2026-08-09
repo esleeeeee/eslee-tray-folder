@@ -2,6 +2,7 @@ using System.Windows;
 using System.Windows.Threading;
 using Eslee.TrayFolder.Native;
 using Eslee.TrayFolder.Services;
+using Eslee.TrayIntegration;
 
 namespace Eslee.TrayFolder;
 
@@ -10,6 +11,7 @@ public partial class App : System.Windows.Application
     private const string ApplicationId = "eslee.trayfolder";
     private SingleInstanceManager? _singleInstance;
     private TrayFolderController? _controller;
+    private TrayHostServer? _hostServer;
     private ConfigService? _configService;
     private FileAppLogger? _logger;
 
@@ -47,12 +49,14 @@ public partial class App : System.Windows.Application
             }
 
             var validator = new ExecutablePathValidator();
+            _hostServer = new TrayHostServer(TrayPipeProtocol.BuildDefaultPipeName());
             _controller = new TrayFolderController(
                 loadResult.Config,
                 _configService,
                 new AutoPowerDiscoveryService(validator),
                 validator,
                 new AutoPowerProcessService(validator, new WindowRestorer()),
+                _hostServer,
                 _logger);
             await _controller.InitializeAsync(CancellationToken.None).ConfigureAwait(true);
             _singleInstance.Listen(() => Dispatcher.BeginInvoke(_controller.ActivateFromSecondInstance));
@@ -80,6 +84,8 @@ public partial class App : System.Windows.Application
         TaskScheduler.UnobservedTaskException -= OnUnobservedTaskException;
         _controller?.Dispose();
         _controller = null;
+        _hostServer?.Dispose();
+        _hostServer = null;
         _singleInstance?.Dispose();
         _singleInstance = null;
         _configService?.Dispose();

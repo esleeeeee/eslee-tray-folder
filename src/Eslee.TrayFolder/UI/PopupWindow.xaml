@@ -58,7 +58,8 @@
                         VerticalAlignment="Top"
                         Background="Transparent"
                         BorderThickness="0"
-                        Click="OnAutoPowerClick">
+                        Click="OnAutoPowerClick"
+                        MouseRightButtonUp="OnAutoPowerRightClick">
                     <StackPanel HorizontalAlignment="Center">
                         <Border Width="68" Height="68" CornerRadius="18" Background="#FFEAF2FF">
                             <Grid>
