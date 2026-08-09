@@ -157,7 +157,8 @@ public static class TrayPipeProtocol
                 string.IsNullOrWhiteSpace(payload.Id) ? null : payload.Id,
                 payload.Text,
                 payload.Enabled ?? true,
-                IsSeparator: false));
+                IsSeparator: false,
+                payload.Checked ?? false));
         }
 
         return items;
@@ -177,6 +178,7 @@ public static class TrayPipeProtocol
                     Id = item.Id,
                     Text = item.Text,
                     Enabled = item.Enabled ? null : false,
+                    Checked = item.Checked ? true : null,
                 });
         }
 
@@ -228,7 +230,7 @@ public sealed class TrayPipeMessage
     public string? ErrorMessage { get; set; }
 }
 
-/// <summary>menu 메시지의 항목 wire 표현입니다. enabled 생략은 true, separator 생략은 false로 해석합니다.</summary>
+/// <summary>menu 메시지의 항목 wire 표현입니다. enabled 생략은 true, separator/checked 생략은 false로 해석합니다.</summary>
 public sealed class TrayMenuItemPayload
 {
     [JsonPropertyName("id")]
@@ -242,4 +244,7 @@ public sealed class TrayMenuItemPayload
 
     [JsonPropertyName("separator")]
     public bool? Separator { get; set; }
+
+    [JsonPropertyName("checked")]
+    public bool? Checked { get; set; }
 }

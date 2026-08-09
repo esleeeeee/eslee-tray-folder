@@ -5,22 +5,25 @@ using System.Text;
 namespace Eslee.TrayIntegration;
 
 /// <summary>
-/// Tray Folder가 실행하는 프로토콜 v1 Named Pipe 호스트입니다. 한 번에 하나의
-/// 클라이언트만 처리하며, 연결이 끊어지면 다시 수락 대기로 돌아갑니다.
+/// Tray Folder가 실행하는 프로토콜 v1 Named Pipe 호스트입니다. 여러 앱이 같은 파이프
+/// 이름으로 동시에 연결할 수 있으며, 각 연결은 register의 appId로 구분됩니다.
+/// 같은 appId가 이미 연결돼 있으면 새 연결은 거부됩니다(기존 세션 우선).
 /// 이벤트는 백그라운드 스레드에서 발생하므로 구독자가 UI 스레드로 넘겨야 합니다.
 /// </summary>
 public sealed class TrayHostServer : IDisposable
 {
+    private const int MaxClients = 8;
+
     private static readonly TimeSpan RegistrationTimeout = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan FaultRetryDelay = TimeSpan.FromSeconds(1);
 
     private readonly string _pipeName;
     private readonly CancellationTokenSource _lifetime = new();
-    private readonly SemaphoreSlim _writeLock = new(1, 1);
-    private readonly ConcurrentDictionary<int, TaskCompletionSource<TrayCommandResult>> _pendingCommands = new();
-    private readonly ConcurrentDictionary<int, TaskCompletionSource<IReadOnlyList<TrayMenuItem>>> _pendingMenuRequests = new();
+    private readonly ConcurrentDictionary<string, ClientSession> _sessions = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<int, PendingCommand> _pendingCommands = new();
+    private readonly ConcurrentDictionary<int, PendingMenuRequest> _pendingMenuRequests = new();
+    private readonly ConcurrentDictionary<Task, byte> _sessionTasks = new();
     private Task? _acceptLoop;
-    private StreamWriter? _writer;
     private int _nextCommandId;
     private bool _disposed;
 
@@ -32,11 +35,13 @@ public sealed class TrayHostServer : IDisposable
 
     public event EventHandler<TrayAppRegistration>? ClientRegistered;
 
-    public event EventHandler? ClientDisconnected;
+    /// <summary>연결이 끊어진 앱의 appId를 전달합니다.</summary>
+    public event EventHandler<string>? ClientDisconnected;
 
     public event EventHandler<Exception>? Faulted;
 
-    public bool IsClientConnected => Volatile.Read(ref _writer) is not null;
+    public bool IsClientConnected(string appId) =>
+        !string.IsNullOrWhiteSpace(appId) && _sessions.ContainsKey(appId);
 
     public void Start()
     {
@@ -44,67 +49,76 @@ public sealed class TrayHostServer : IDisposable
         _acceptLoop ??= Task.Run(() => AcceptLoopAsync(_lifetime.Token));
     }
 
-    public Task<bool> SendTrayModeAsync(TrayMode mode, CancellationToken cancellationToken)
+    public Task<bool> SendTrayModeAsync(string appId, TrayMode mode, CancellationToken cancellationToken)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
+        ArgumentException.ThrowIfNullOrWhiteSpace(appId);
         var message = new TrayPipeMessage
         {
             Type = TrayPipeProtocol.SetTrayModeType,
             Mode = TrayPipeProtocol.FormatTrayMode(mode),
         };
-        return SendLineAsync(TrayPipeProtocol.Serialize(message), cancellationToken);
+        return SendLineAsync(appId, TrayPipeProtocol.Serialize(message), cancellationToken);
     }
 
-    public async Task<TrayCommandResult> SendCommandAsync(
+    public Task<TrayCommandResult> SendCommandAsync(
+        string appId,
         TrayHostCommand command,
         TimeSpan timeout,
         CancellationToken cancellationToken)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
-        var id = Interlocked.Increment(ref _nextCommandId);
-        var pending = new TaskCompletionSource<TrayCommandResult>(TaskCreationOptions.RunContinuationsAsynchronously);
-        _pendingCommands[id] = pending;
-        try
-        {
-            var message = new TrayPipeMessage
+        ArgumentException.ThrowIfNullOrWhiteSpace(appId);
+        return SendCommandCoreAsync(
+            appId,
+            id => new TrayPipeMessage
             {
                 Type = TrayPipeProtocol.CommandType,
                 Id = id,
                 Command = TrayPipeProtocol.FormatCommand(command),
-            };
-            var sent = await SendLineAsync(TrayPipeProtocol.Serialize(message), cancellationToken)
-                .ConfigureAwait(false);
-            if (!sent)
-            {
-                return new TrayCommandResult(false, "연결된 앱이 없어 명령을 보내지 못했습니다.");
-            }
+            },
+            timeout,
+            cancellationToken);
+    }
 
-            try
+    /// <summary>메뉴 항목 클릭을 앱에 전달합니다. 항목의 action id를 그대로 보냅니다.</summary>
+    public Task<TrayCommandResult> SendMenuActionAsync(
+        string appId,
+        string actionId,
+        TimeSpan timeout,
+        CancellationToken cancellationToken)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        ArgumentException.ThrowIfNullOrWhiteSpace(appId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(actionId);
+        return SendCommandCoreAsync(
+            appId,
+            id => new TrayPipeMessage
             {
-                return await pending.Task.WaitAsync(timeout, cancellationToken).ConfigureAwait(false);
-            }
-            catch (TimeoutException)
-            {
-                return new TrayCommandResult(false, "앱이 제한 시간 안에 응답하지 않았습니다.");
-            }
-        }
-        finally
-        {
-            _pendingCommands.TryRemove(id, out _);
-        }
+                Type = TrayPipeProtocol.CommandType,
+                Id = id,
+                Command = TrayPipeProtocol.MenuActionCommandValue,
+                ActionId = actionId,
+            },
+            timeout,
+            cancellationToken);
     }
 
     /// <summary>
     /// 연결된 앱에 현재 트레이 메뉴를 요청합니다. 연결이 없거나 앱이 제한 시간 안에
     /// 응답하지 않으면(메뉴 미지원 구버전 포함) null을 돌려줍니다.
     /// </summary>
-    public async Task<IReadOnlyList<TrayMenuItem>?> GetMenuAsync(TimeSpan timeout, CancellationToken cancellationToken)
+    public async Task<IReadOnlyList<TrayMenuItem>?> GetMenuAsync(
+        string appId,
+        TimeSpan timeout,
+        CancellationToken cancellationToken)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
+        ArgumentException.ThrowIfNullOrWhiteSpace(appId);
         var id = Interlocked.Increment(ref _nextCommandId);
         var pending = new TaskCompletionSource<IReadOnlyList<TrayMenuItem>>(
             TaskCreationOptions.RunContinuationsAsynchronously);
-        _pendingMenuRequests[id] = pending;
+        _pendingMenuRequests[id] = new PendingMenuRequest(appId, pending);
         try
         {
             var message = new TrayPipeMessage
@@ -112,7 +126,7 @@ public sealed class TrayHostServer : IDisposable
                 Type = TrayPipeProtocol.GetMenuType,
                 Id = id,
             };
-            var sent = await SendLineAsync(TrayPipeProtocol.Serialize(message), cancellationToken)
+            var sent = await SendLineAsync(appId, TrayPipeProtocol.Serialize(message), cancellationToken)
                 .ConfigureAwait(false);
             if (!sent)
             {
@@ -139,31 +153,44 @@ public sealed class TrayHostServer : IDisposable
         }
     }
 
-    /// <summary>메뉴 항목 클릭을 앱에 전달합니다. 항목의 action id를 그대로 보냅니다.</summary>
-    public async Task<TrayCommandResult> SendMenuActionAsync(
-        string actionId,
+    public void Dispose()
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        _disposed = true;
+        _lifetime.Cancel();
+        FailAllPending("호스트를 종료했습니다.");
+        try
+        {
+            _acceptLoop?.Wait(TimeSpan.FromSeconds(3));
+            Task.WaitAll(_sessionTasks.Keys.ToArray(), TimeSpan.FromSeconds(2));
+        }
+        catch (AggregateException)
+        {
+        }
+
+        _lifetime.Dispose();
+    }
+
+    private async Task<TrayCommandResult> SendCommandCoreAsync(
+        string appId,
+        Func<int, TrayPipeMessage> messageFactory,
         TimeSpan timeout,
         CancellationToken cancellationToken)
     {
-        ObjectDisposedException.ThrowIf(_disposed, this);
-        ArgumentException.ThrowIfNullOrWhiteSpace(actionId);
         var id = Interlocked.Increment(ref _nextCommandId);
         var pending = new TaskCompletionSource<TrayCommandResult>(TaskCreationOptions.RunContinuationsAsynchronously);
-        _pendingCommands[id] = pending;
+        _pendingCommands[id] = new PendingCommand(appId, pending);
         try
         {
-            var message = new TrayPipeMessage
-            {
-                Type = TrayPipeProtocol.CommandType,
-                Id = id,
-                Command = TrayPipeProtocol.MenuActionCommandValue,
-                ActionId = actionId,
-            };
-            var sent = await SendLineAsync(TrayPipeProtocol.Serialize(message), cancellationToken)
+            var sent = await SendLineAsync(appId, TrayPipeProtocol.Serialize(messageFactory(id)), cancellationToken)
                 .ConfigureAwait(false);
             if (!sent)
             {
-                return new TrayCommandResult(false, "연결된 앱이 없어 메뉴 명령을 보내지 못했습니다.");
+                return new TrayCommandResult(false, "연결된 앱이 없어 명령을 보내지 못했습니다.");
             }
 
             try
@@ -181,49 +208,57 @@ public sealed class TrayHostServer : IDisposable
         }
     }
 
-    public void Dispose()
-    {
-        if (_disposed)
-        {
-            return;
-        }
-
-        _disposed = true;
-        _lifetime.Cancel();
-        FailAllPending("호스트를 종료했습니다.");
-        try
-        {
-            _acceptLoop?.Wait(TimeSpan.FromSeconds(3));
-        }
-        catch (AggregateException)
-        {
-        }
-
-        _lifetime.Dispose();
-        _writeLock.Dispose();
-    }
-
     private async Task AcceptLoopAsync(CancellationToken cancellationToken)
     {
         while (!cancellationToken.IsCancellationRequested)
         {
+            NamedPipeServerStream? server = null;
             try
             {
                 // 버퍼 크기를 지정하지 않으면 0 할당량 파이프가 되어, 상대편이 읽기를
                 // 걸어두기 전까지 쓰기가 완료되지 않아 교착이 생길 수 있습니다.
-                var server = new NamedPipeServerStream(
+                server = new NamedPipeServerStream(
                     _pipeName,
                     PipeDirection.InOut,
-                    maxNumberOfServerInstances: 1,
+                    MaxClients,
                     PipeTransmissionMode.Byte,
                     PipeOptions.Asynchronous,
                     inBufferSize: 4096,
                     outBufferSize: 4096);
-                await using (server.ConfigureAwait(false))
-                {
-                    await server.WaitForConnectionAsync(cancellationToken).ConfigureAwait(false);
-                    await ServeClientAsync(server, cancellationToken).ConfigureAwait(false);
-                }
+                await server.WaitForConnectionAsync(cancellationToken).ConfigureAwait(false);
+
+                // 연결된 스트림의 소유권을 세션 태스크로 넘기고 즉시 다음 연결을 수락합니다.
+                var connected = server;
+                server = null;
+                Task? sessionTask = null;
+                sessionTask = Task.Run(
+                    async () =>
+                    {
+                        try
+                        {
+                            await using (connected.ConfigureAwait(false))
+                            {
+                                await ServeClientAsync(connected, cancellationToken).ConfigureAwait(false);
+                            }
+                        }
+                        catch (OperationCanceledException)
+                        {
+                        }
+                        catch (Exception exception) when (
+                            exception is IOException or ObjectDisposedException or UnauthorizedAccessException)
+                        {
+                            Faulted?.Invoke(this, exception);
+                        }
+                        finally
+                        {
+                            if (sessionTask is not null)
+                            {
+                                _sessionTasks.TryRemove(sessionTask, out _);
+                            }
+                        }
+                    },
+                    CancellationToken.None);
+                _sessionTasks[sessionTask] = 0;
             }
             catch (OperationCanceledException)
             {
@@ -240,6 +275,13 @@ public sealed class TrayHostServer : IDisposable
                 catch (OperationCanceledException)
                 {
                     break;
+                }
+            }
+            finally
+            {
+                if (server is not null)
+                {
+                    await server.DisposeAsync().ConfigureAwait(false);
                 }
             }
         }
@@ -265,10 +307,16 @@ public sealed class TrayHostServer : IDisposable
                 return;
             }
 
-            Volatile.Write(ref _writer, writer);
-            ClientRegistered?.Invoke(this, registration);
+            var session = new ClientSession(registration.AppId, writer);
+            if (!_sessions.TryAdd(registration.AppId, session))
+            {
+                // 같은 appId가 이미 연결돼 있으면 새 연결을 거부합니다.
+                return;
+            }
+
             try
             {
+                ClientRegistered?.Invoke(this, registration);
                 while (!cancellationToken.IsCancellationRequested)
                 {
                     var line = await reader.ReadLineAsync(cancellationToken).ConfigureAwait(false);
@@ -287,13 +335,14 @@ public sealed class TrayHostServer : IDisposable
                         message.Id is int commandId &&
                         _pendingCommands.TryRemove(commandId, out var pending))
                     {
-                        pending.TrySetResult(new TrayCommandResult(message.Succeeded ?? false, message.ErrorMessage));
+                        pending.Completion.TrySetResult(
+                            new TrayCommandResult(message.Succeeded ?? false, message.ErrorMessage));
                     }
                     else if (string.Equals(message.Type, TrayPipeProtocol.MenuType, StringComparison.Ordinal) &&
                         message.Id is int menuId &&
                         _pendingMenuRequests.TryRemove(menuId, out var pendingMenu))
                     {
-                        pendingMenu.TrySetResult(TrayPipeProtocol.ToMenuItems(message));
+                        pendingMenu.Completion.TrySetResult(TrayPipeProtocol.ToMenuItems(message));
                     }
                 }
             }
@@ -305,9 +354,10 @@ public sealed class TrayHostServer : IDisposable
             }
             finally
             {
-                Volatile.Write(ref _writer, null);
-                FailAllPending("앱과의 연결이 끊어졌습니다.");
-                ClientDisconnected?.Invoke(this, EventArgs.Empty);
+                _sessions.TryRemove(new KeyValuePair<string, ClientSession>(registration.AppId, session));
+                FailPendingFor(registration.AppId, "앱과의 연결이 끊어졌습니다.");
+                ClientDisconnected?.Invoke(this, registration.AppId);
+                session.WriteLock.Dispose();
             }
         }
     }
@@ -337,18 +387,25 @@ public sealed class TrayHostServer : IDisposable
         return message is null ? null : TrayPipeProtocol.TryCreateRegistration(message);
     }
 
-    private async Task<bool> SendLineAsync(string line, CancellationToken cancellationToken)
+    private async Task<bool> SendLineAsync(string appId, string line, CancellationToken cancellationToken)
     {
-        var writer = Volatile.Read(ref _writer);
-        if (writer is null)
+        if (!_sessions.TryGetValue(appId, out var session))
         {
             return false;
         }
 
-        await _writeLock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            await writer.WriteLineAsync(line.AsMemory(), cancellationToken).ConfigureAwait(false);
+            await session.WriteLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (ObjectDisposedException)
+        {
+            return false;
+        }
+
+        try
+        {
+            await session.Writer.WriteLineAsync(line.AsMemory(), cancellationToken).ConfigureAwait(false);
             return true;
         }
         catch (Exception exception) when (
@@ -358,7 +415,34 @@ public sealed class TrayHostServer : IDisposable
         }
         finally
         {
-            _writeLock.Release();
+            try
+            {
+                session.WriteLock.Release();
+            }
+            catch (ObjectDisposedException)
+            {
+            }
+        }
+    }
+
+    private void FailPendingFor(string appId, string reason)
+    {
+        foreach (var entry in _pendingCommands)
+        {
+            if (string.Equals(entry.Value.AppId, appId, StringComparison.OrdinalIgnoreCase) &&
+                _pendingCommands.TryRemove(entry.Key, out var pending))
+            {
+                pending.Completion.TrySetResult(new TrayCommandResult(false, reason));
+            }
+        }
+
+        foreach (var entry in _pendingMenuRequests)
+        {
+            if (string.Equals(entry.Value.AppId, appId, StringComparison.OrdinalIgnoreCase) &&
+                _pendingMenuRequests.TryRemove(entry.Key, out var pendingMenu))
+            {
+                pendingMenu.Completion.TrySetCanceled();
+            }
         }
     }
 
@@ -368,7 +452,7 @@ public sealed class TrayHostServer : IDisposable
         {
             if (_pendingCommands.TryRemove(entry.Key, out var pending))
             {
-                pending.TrySetResult(new TrayCommandResult(false, reason));
+                pending.Completion.TrySetResult(new TrayCommandResult(false, reason));
             }
         }
 
@@ -376,8 +460,28 @@ public sealed class TrayHostServer : IDisposable
         {
             if (_pendingMenuRequests.TryRemove(entry.Key, out var pendingMenu))
             {
-                pendingMenu.TrySetCanceled();
+                pendingMenu.Completion.TrySetCanceled();
             }
         }
     }
+
+    private sealed class ClientSession
+    {
+        public ClientSession(string appId, StreamWriter writer)
+        {
+            AppId = appId;
+            Writer = writer;
+            WriteLock = new SemaphoreSlim(1, 1);
+        }
+
+        public string AppId { get; }
+
+        public StreamWriter Writer { get; }
+
+        public SemaphoreSlim WriteLock { get; }
+    }
+
+    private sealed record PendingCommand(string AppId, TaskCompletionSource<TrayCommandResult> Completion);
+
+    private sealed record PendingMenuRequest(string AppId, TaskCompletionSource<IReadOnlyList<TrayMenuItem>> Completion);
 }

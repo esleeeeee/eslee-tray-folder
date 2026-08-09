@@ -21,13 +21,14 @@ public sealed record TrayAppState(bool IsRunning, bool CanActivate, string? Stat
 /// <summary>
 /// 연동 앱이 제공하는 트레이 메뉴 항목입니다. 호스트는 이 목록을 그대로 렌더링하고,
 /// 클릭 시 <see cref="Id"/>를 액션 명령으로 돌려보냅니다. 구분선은 Id와 Text가 없습니다.
+/// <see cref="Checked"/>는 토글 항목의 체크 표시입니다.
 /// </summary>
-public sealed record TrayMenuItem(string? Id, string Text, bool Enabled, bool IsSeparator)
+public sealed record TrayMenuItem(string? Id, string Text, bool Enabled, bool IsSeparator, bool Checked = false)
 {
     public static TrayMenuItem Separator { get; } = new(null, string.Empty, false, true);
 
-    public static TrayMenuItem Action(string id, string text, bool enabled = true) =>
-        new(id, text, enabled, false);
+    public static TrayMenuItem Action(string id, string text, bool enabled = true, bool isChecked = false) =>
+        new(id, text, enabled, false, isChecked);
 }
 
 /// <summary>호스트가 연동 앱에 내릴 수 있는 최소 명령입니다.</summary>

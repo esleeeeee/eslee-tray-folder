@@ -16,9 +16,19 @@ public sealed class ConfigServiceTests
         var result = await service.LoadOrCreateAsync();
 
         Assert.IsTrue(File.Exists(System.IO.Path.Combine(directory.Path, "config.json")));
-        Assert.HasCount(1, result.Config.Apps);
+        Assert.HasCount(5, result.Config.Apps);
         Assert.AreEqual("eslee.autopower", result.Config.Apps[0].AppId);
         Assert.AreEqual("hosted", result.Config.Apps[0].TrayMode);
+        CollectionAssert.AreEqual(
+            new[]
+            {
+                "eslee.autopower",
+                "eslee.folderlocker",
+                "eslee.downloadrouter",
+                "eslee.onekey",
+                "eslee.quicksend",
+            },
+            result.Config.Apps.OrderBy(app => app.Order).Select(app => app.AppId).ToArray());
         Assert.IsNull(result.RecoveredBackupPath);
     }
 
@@ -55,7 +65,7 @@ public sealed class ConfigServiceTests
         var recoveredJson = await File.ReadAllTextAsync(configPath);
         var recovered = JsonSerializer.Deserialize<TrayFolderConfig>(recoveredJson);
         Assert.IsNotNull(recovered);
-        Assert.HasCount(1, recovered.Apps);
+        Assert.HasCount(5, recovered.Apps);
     }
 
     private sealed class TestDirectory : IDisposable

@@ -28,6 +28,81 @@ public sealed class AutoPowerProcessService
                 : new AutoPowerStatus(true, $"PID {process.Id}");
         }, cancellationToken);
 
+    /// <summary>
+    /// AutoPower 외 앱을 위한 경로 기반 상태 확인입니다. 설정된 실행 파일 경로와
+    /// 같은 경로의 프로세스가 있는지만 검사합니다.
+    /// </summary>
+    public Task<AutoPowerStatus> GetStatusByPathAsync(string? configuredPath, CancellationToken cancellationToken) =>
+        Task.Run(() =>
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (string.IsNullOrWhiteSpace(configuredPath))
+            {
+                return new AutoPowerStatus(false);
+            }
+
+            using var process = FindProcessByPath(configuredPath);
+            return process is null
+                ? new AutoPowerStatus(false)
+                : new AutoPowerStatus(true, $"PID {process.Id}");
+        }, cancellationToken);
+
+    /// <summary>AutoPower 외 앱을 위한 경로 기반 창 복원 또는 실행입니다.</summary>
+    public async Task<AutoPowerOperationResult> ActivateOrLaunchByPathAsync(
+        string? configuredPath,
+        string displayName,
+        CancellationToken cancellationToken)
+    {
+        var validation = _validator.ValidateGeneric(configuredPath, displayName);
+        if (!validation.IsValid || validation.NormalizedPath is null)
+        {
+            return new AutoPowerOperationResult(false, validation.UserMessage);
+        }
+
+        try
+        {
+            using var existingProcess = await Task.Run(
+                () => FindProcessByPath(validation.NormalizedPath),
+                cancellationToken).ConfigureAwait(false);
+            if (existingProcess is not null)
+            {
+                var restored = await _windowRestorer
+                    .TryRestoreAsync(existingProcess, cancellationToken)
+                    .ConfigureAwait(false);
+                return restored
+                    ? new AutoPowerOperationResult(true)
+                    : new AutoPowerOperationResult(
+                        false,
+                        $"{displayName}은(는) 실행 중이지만 복원할 메인 창을 찾지 못했습니다.");
+            }
+
+            await Task.Run(() =>
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var startInfo = new ProcessStartInfo
+                {
+                    FileName = validation.NormalizedPath,
+                    WorkingDirectory = Path.GetDirectoryName(validation.NormalizedPath)!,
+                    UseShellExecute = true,
+                };
+                using var started = Process.Start(startInfo)
+                    ?? throw new InvalidOperationException("Windows가 새 프로세스를 만들지 못했습니다.");
+            }, cancellationToken).ConfigureAwait(false);
+            return new AutoPowerOperationResult(true);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception exception) when (exception is InvalidOperationException or System.ComponentModel.Win32Exception or IOException or UnauthorizedAccessException)
+        {
+            return new AutoPowerOperationResult(
+                false,
+                $"{displayName}을(를) 실행하거나 창을 복원하지 못했습니다. 자세한 내용은 로그를 확인해 주세요.",
+                exception);
+        }
+    }
+
     public async Task<AutoPowerOperationResult> ActivateOrLaunchAsync(
         string? configuredPath,
         CancellationToken cancellationToken)
@@ -80,6 +155,54 @@ public sealed class AutoPowerProcessService
                 "AutoPower를 실행하거나 창을 복원하지 못했습니다. 자세한 내용은 로그를 확인해 주세요.",
                 exception);
         }
+    }
+
+    private static Process? FindProcessByPath(string configuredPath)
+    {
+        string fullPath;
+        string processName;
+        try
+        {
+            fullPath = Path.GetFullPath(configuredPath);
+            processName = Path.GetFileNameWithoutExtension(fullPath);
+        }
+        catch (Exception exception) when (exception is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            return null;
+        }
+
+        Process[] processes;
+        try
+        {
+            processes = Process.GetProcessesByName(processName);
+        }
+        catch (InvalidOperationException)
+        {
+            return null;
+        }
+
+        Process? match = null;
+        foreach (var process in processes)
+        {
+            if (match is not null)
+            {
+                process.Dispose();
+                continue;
+            }
+
+            var descriptor = TryDescribe(process);
+            if (descriptor?.ExecutablePath is string path &&
+                string.Equals(Path.GetFullPath(path), fullPath, StringComparison.OrdinalIgnoreCase))
+            {
+                match = process;
+            }
+            else
+            {
+                process.Dispose();
+            }
+        }
+
+        return match;
     }
 
     private static Process? FindMatchingProcess(string? configuredPath)
