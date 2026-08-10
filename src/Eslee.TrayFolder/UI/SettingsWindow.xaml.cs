@@ -27,11 +27,33 @@ public partial class SettingsWindow : Window
         InitializeComponent();
     }
 
+    private string? _releaseUrl;
+
     /// <summary>저장 버튼: 화면의 모든 앱 설정을 한 번에 전달합니다.</summary>
     public event EventHandler<IReadOnlyList<SettingsSaveRequest>>? SaveAllRequested;
 
     /// <summary>앱별 자동 탐색 버튼 클릭. 해당 앱 id를 전달합니다.</summary>
     public event EventHandler<string>? DiscoveryRequested;
+
+    /// <summary>수동 '업데이트 확인' 버튼 클릭.</summary>
+    public event EventHandler? UpdateCheckRequested;
+
+    /// <summary>프로그램 정보 영역의 현재 버전 표시를 설정합니다.</summary>
+    public void SetVersionText(string versionText) =>
+        VersionText.Text = $"eslee Tray Folder {versionText}";
+
+    /// <summary>
+    /// 업데이트 확인 결과를 표시합니다. releaseUrl이 있으면 Release 페이지 버튼을 보여줍니다.
+    /// </summary>
+    public void SetUpdateStatus(string statusText, string? releaseUrl, bool checkInProgress = false)
+    {
+        UpdateStatusText.Text = statusText;
+        _releaseUrl = releaseUrl;
+        OpenReleaseButton.Visibility = string.IsNullOrWhiteSpace(releaseUrl)
+            ? Visibility.Collapsed
+            : Visibility.Visible;
+        CheckUpdateButton.IsEnabled = !checkInProgress;
+    }
 
     /// <summary>모든 앱 섹션을 다시 만듭니다.</summary>
     public void SetApps(IReadOnlyList<SettingsAppEntry> apps)
@@ -191,6 +213,30 @@ public partial class SettingsWindow : Window
         if (requests.Count > 0)
         {
             SaveAllRequested?.Invoke(this, requests);
+        }
+    }
+
+    private void OnCheckUpdateClick(object sender, RoutedEventArgs e) =>
+        UpdateCheckRequested?.Invoke(this, EventArgs.Empty);
+
+    private void OnOpenReleaseClick(object sender, RoutedEventArgs e)
+    {
+        if (string.IsNullOrWhiteSpace(_releaseUrl))
+        {
+            return;
+        }
+
+        try
+        {
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(_releaseUrl)
+            {
+                UseShellExecute = true,
+            });
+        }
+        catch (Exception exception) when (exception is System.ComponentModel.Win32Exception
+            or InvalidOperationException)
+        {
+            ShowMessage("브라우저를 열지 못했습니다. Release 페이지 주소: " + _releaseUrl, isError: true);
         }
     }
 

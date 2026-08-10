@@ -10,6 +10,7 @@ namespace Eslee.TrayFolder.Services;
 public sealed class TrayFolderController : IDisposable
 {
     private static readonly TimeSpan PipeCommandTimeout = TimeSpan.FromSeconds(3);
+    private static readonly TimeSpan UpdateCheckInterval = TimeSpan.FromHours(24);
 
     private readonly TrayFolderConfig _config;
     private readonly ConfigService _configService;
@@ -17,7 +18,9 @@ public sealed class TrayFolderController : IDisposable
     private readonly ExecutablePathValidator _pathValidator;
     private readonly AutoPowerProcessService _processService;
     private readonly TrayHostServer _hostServer;
+    private readonly UpdateCheckService _updateService;
     private readonly IAppLogger _logger;
+    private UpdateCheckResult? _updateResult;
     private readonly Dispatcher _dispatcher;
     private readonly CancellationTokenSource _lifetimeCancellation = new();
     private readonly PopupWindow _popupWindow = new();
@@ -34,6 +37,7 @@ public sealed class TrayFolderController : IDisposable
         ExecutablePathValidator pathValidator,
         AutoPowerProcessService processService,
         TrayHostServer hostServer,
+        UpdateCheckService updateService,
         IAppLogger logger)
     {
         _config = config;
@@ -42,6 +46,7 @@ public sealed class TrayFolderController : IDisposable
         _pathValidator = pathValidator;
         _processService = processService;
         _hostServer = hostServer;
+        _updateService = updateService;
         _logger = logger;
         _dispatcher = Dispatcher.CurrentDispatcher;
 
@@ -52,6 +57,7 @@ public sealed class TrayFolderController : IDisposable
         _popupWindow.AppMenuActionRequested += OnAppMenuActionRequested;
         _settingsWindow.SaveAllRequested += OnSettingsSaveAllRequested;
         _settingsWindow.DiscoveryRequested += OnSettingsDiscoveryRequested;
+        _settingsWindow.UpdateCheckRequested += OnUpdateCheckRequested;
         _hostServer.ClientRegistered += OnHostClientRegistered;
         _hostServer.ClientDisconnected += OnHostClientDisconnected;
         _hostServer.Faulted += OnHostServerFaulted;
@@ -73,6 +79,10 @@ public sealed class TrayFolderController : IDisposable
             () => System.Windows.Application.Current.Shutdown(),
             _logger);
 
+        var versionText = UpdateCheckService.FormatVersion(CurrentVersion);
+        _popupWindow.SetVersion(versionText);
+        _settingsWindow.SetVersionText(versionText);
+
         _popupWindow.SetApps(EnabledApps.Select(app => (app.AppId, app.DisplayName)).ToList());
         await EnsureAppPathsAsync(cancellationToken).ConfigureAwait(true);
         foreach (var app in EnabledApps)
@@ -82,6 +92,7 @@ public sealed class TrayFolderController : IDisposable
 
         _hostServer.Start();
         await RefreshStatusAsync(cancellationToken).ConfigureAwait(true);
+        _ = RunStartupUpdateCheckAsync();
     }
 
     public void ActivateFromSecondInstance()
@@ -118,6 +129,7 @@ public sealed class TrayFolderController : IDisposable
         _popupWindow.AppMenuActionRequested -= OnAppMenuActionRequested;
         _settingsWindow.SaveAllRequested -= OnSettingsSaveAllRequested;
         _settingsWindow.DiscoveryRequested -= OnSettingsDiscoveryRequested;
+        _settingsWindow.UpdateCheckRequested -= OnUpdateCheckRequested;
         _hostServer.ClientRegistered -= OnHostClientRegistered;
         _hostServer.ClientDisconnected -= OnHostClientDisconnected;
         _hostServer.Faulted -= OnHostServerFaulted;
@@ -171,8 +183,112 @@ public sealed class TrayFolderController : IDisposable
         _popupWindow.Hide();
         _statusTimer.Stop();
         RefreshSettingsEntries();
+        ApplyUpdateStatusToSettings();
         _settingsWindow.ShowMessage(string.Empty, isError: false);
         _settingsWindow.ShowAndActivate();
+    }
+
+    private static Version CurrentVersion =>
+        typeof(TrayFolderController).Assembly.GetName().Version ?? new Version(0, 0, 0);
+
+    private bool IsUpdateCheckDue()
+    {
+        if (!DateTimeOffset.TryParse(
+                _config.LastUpdateCheckUtc,
+                null,
+                System.Globalization.DateTimeStyles.RoundtripKind,
+                out var lastCheck))
+        {
+            return true;
+        }
+
+        return DateTimeOffset.UtcNow - lastCheck >= UpdateCheckInterval;
+    }
+
+    private async Task RunStartupUpdateCheckAsync()
+    {
+        try
+        {
+            if (!IsUpdateCheckDue())
+            {
+                return;
+            }
+
+            await CheckForUpdatesAsync(showProgress: false).ConfigureAwait(true);
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (Exception exception)
+        {
+            await _logger.ErrorAsync("업데이트 확인 중 오류가 발생했습니다.", exception);
+        }
+    }
+
+    private async void OnUpdateCheckRequested(object? sender, EventArgs e)
+    {
+        try
+        {
+            await CheckForUpdatesAsync(showProgress: true).ConfigureAwait(true);
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (Exception exception)
+        {
+            await _logger.ErrorAsync("업데이트 확인 중 오류가 발생했습니다.", exception);
+            _settingsWindow.SetUpdateStatus("업데이트 확인에 실패했습니다. 로그를 확인해 주세요.", null);
+        }
+    }
+
+    private async Task CheckForUpdatesAsync(bool showProgress)
+    {
+        if (showProgress)
+        {
+            _settingsWindow.SetUpdateStatus("최신 버전을 확인하는 중…", null, checkInProgress: true);
+        }
+
+        var result = await _updateService
+            .CheckAsync(CurrentVersion, _lifetimeCancellation.Token)
+            .ConfigureAwait(true);
+        if (_disposed)
+        {
+            return;
+        }
+
+        _updateResult = result;
+        if (result.Status != UpdateStatus.Failed)
+        {
+            _config.LastUpdateCheckUtc = DateTimeOffset.UtcNow.ToString("O");
+            await _configService.SaveAsync(_config, _lifetimeCancellation.Token).ConfigureAwait(true);
+        }
+
+        ApplyUpdateStatusToSettings(showFailure: showProgress);
+        await _logger.InfoAsync(
+            $"업데이트 확인 결과: {result.Status} (최신 릴리스 {result.LatestVersion ?? "알 수 없음"})");
+    }
+
+    private void ApplyUpdateStatusToSettings(bool showFailure = false)
+    {
+        switch (_updateResult?.Status)
+        {
+            case UpdateStatus.UpdateAvailable:
+                _settingsWindow.SetUpdateStatus(
+                    $"새 버전 {_updateResult.LatestVersion}이(가) 있습니다. Release 페이지에서 설치 파일을 받아 업데이트하세요.",
+                    _updateResult.ReleaseUrl ?? UpdateCheckService.ReleasesPageUrl);
+                break;
+            case UpdateStatus.UpToDate:
+                _settingsWindow.SetUpdateStatus("최신 버전입니다.", null);
+                break;
+            case UpdateStatus.Failed:
+                _settingsWindow.SetUpdateStatus(
+                    showFailure ? "업데이트 확인에 실패했습니다. 네트워크 연결을 확인해 주세요." : string.Empty,
+                    null);
+                break;
+            default:
+                _settingsWindow.SetUpdateStatus(string.Empty, null);
+                break;
+        }
     }
 
     private void RefreshSettingsEntries()

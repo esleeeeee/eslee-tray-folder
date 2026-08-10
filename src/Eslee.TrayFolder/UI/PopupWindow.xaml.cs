@@ -50,6 +50,9 @@ public partial class PopupWindow : Window
     /// </summary>
     public int VisibleSession { get; private set; }
 
+    /// <summary>헤더 부제에 현재 버전을 함께 표시합니다.</summary>
+    public void SetVersion(string versionText) => SubtitleText.Text = $"eslee apps · {versionText}";
+
     /// <summary>표시할 앱 타일 목록을 다시 만듭니다. 순서대로 3열 격자에 배치됩니다.</summary>
     public void SetApps(IReadOnlyList<(string AppId, string DisplayName)> apps)
     {

@@ -16,6 +16,7 @@
             <RowDefinition Height="*" />
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
         <TextBlock FontSize="23" FontWeight="SemiBold" Text="Tray Folder 설정" />
@@ -32,13 +33,51 @@
             <StackPanel x:Name="AppSectionsPanel" />
         </ScrollViewer>
 
+        <Border Grid.Row="3"
+                Margin="0,14,0,0"
+                Padding="14,10"
+                Background="#FFF4F6FA"
+                CornerRadius="8">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <StackPanel VerticalAlignment="Center">
+                    <TextBlock x:Name="VersionText" FontWeight="SemiBold" Text="eslee Tray Folder" />
+                    <TextBlock x:Name="UpdateStatusText"
+                               Margin="0,3,0,0"
+                               FontSize="11"
+                               Foreground="#FF667085"
+                               Text=""
+                               TextWrapping="Wrap" />
+                </StackPanel>
+                <Button x:Name="OpenReleaseButton"
+                        Grid.Column="1"
+                        Margin="10,0,0,0"
+                        Padding="13,5"
+                        VerticalAlignment="Center"
+                        Content="Release 페이지 열기"
+                        Visibility="Collapsed"
+                        Click="OnOpenReleaseClick" />
+                <Button x:Name="CheckUpdateButton"
+                        Grid.Column="2"
+                        Margin="8,0,0,0"
+                        Padding="13,5"
+                        VerticalAlignment="Center"
+                        Content="업데이트 확인"
+                        Click="OnCheckUpdateClick" />
+            </Grid>
+        </Border>
+
         <TextBlock x:Name="MessageText"
-                   Grid.Row="3"
+                   Grid.Row="4"
                    Margin="0,13,0,0"
                    Foreground="#FFC43D3D"
                    TextWrapping="Wrap" />
 
-        <StackPanel Grid.Row="4"
+        <StackPanel Grid.Row="5"
                     Margin="0,13,0,0"
                     HorizontalAlignment="Right"
                     Orientation="Horizontal">
