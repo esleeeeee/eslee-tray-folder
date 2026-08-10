@@ -4,6 +4,6 @@
     <AssemblyName>Eslee.TrayIntegration</AssemblyName>
     <RootNamespace>Eslee.TrayIntegration</RootNamespace>
     <Description>Tray Folder와 eslee 앱 사이의 향후 통합 계약입니다.</Description>
-    <Version>0.1.0</Version>
+    <Version>0.1.1</Version>
   </PropertyGroup>
 </Project>
