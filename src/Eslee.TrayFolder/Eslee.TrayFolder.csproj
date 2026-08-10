@@ -11,7 +11,7 @@
     <Product>Tray Folder</Product>
     <Title>Tray Folder</Title>
     <Description>eslee 프로그램을 위한 전용 트레이 폴더</Description>
-    <Version>0.1.0</Version>
+    <Version>0.1.1</Version>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
