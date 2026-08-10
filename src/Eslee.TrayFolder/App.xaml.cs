@@ -53,7 +53,7 @@ public partial class App : System.Windows.Application
             _controller = new TrayFolderController(
                 loadResult.Config,
                 _configService,
-                new AutoPowerDiscoveryService(validator),
+                new AppDiscoveryService(validator),
                 validator,
                 new AutoPowerProcessService(validator, new WindowRestorer()),
                 _hostServer,

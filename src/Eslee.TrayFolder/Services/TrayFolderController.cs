@@ -13,7 +13,7 @@ public sealed class TrayFolderController : IDisposable
 
     private readonly TrayFolderConfig _config;
     private readonly ConfigService _configService;
-    private readonly AutoPowerDiscoveryService _discoveryService;
+    private readonly AppDiscoveryService _discoveryService;
     private readonly ExecutablePathValidator _pathValidator;
     private readonly AutoPowerProcessService _processService;
     private readonly TrayHostServer _hostServer;
@@ -30,7 +30,7 @@ public sealed class TrayFolderController : IDisposable
     public TrayFolderController(
         TrayFolderConfig config,
         ConfigService configService,
-        AutoPowerDiscoveryService discoveryService,
+        AppDiscoveryService discoveryService,
         ExecutablePathValidator pathValidator,
         AutoPowerProcessService processService,
         TrayHostServer hostServer,
@@ -50,7 +50,7 @@ public sealed class TrayFolderController : IDisposable
         _popupWindow.AppRequested += OnAppRequested;
         _popupWindow.AppMenuRequested += OnAppMenuRequested;
         _popupWindow.AppMenuActionRequested += OnAppMenuActionRequested;
-        _settingsWindow.SaveRequested += OnSettingsSaveRequested;
+        _settingsWindow.SaveAllRequested += OnSettingsSaveAllRequested;
         _settingsWindow.DiscoveryRequested += OnSettingsDiscoveryRequested;
         _hostServer.ClientRegistered += OnHostClientRegistered;
         _hostServer.ClientDisconnected += OnHostClientDisconnected;
@@ -74,7 +74,7 @@ public sealed class TrayFolderController : IDisposable
             _logger);
 
         _popupWindow.SetApps(EnabledApps.Select(app => (app.AppId, app.DisplayName)).ToList());
-        await EnsureAutoPowerPathAsync(cancellationToken).ConfigureAwait(true);
+        await EnsureAppPathsAsync(cancellationToken).ConfigureAwait(true);
         foreach (var app in EnabledApps)
         {
             UpdateAppPresentation(app);
@@ -116,7 +116,7 @@ public sealed class TrayFolderController : IDisposable
         _popupWindow.AppRequested -= OnAppRequested;
         _popupWindow.AppMenuRequested -= OnAppMenuRequested;
         _popupWindow.AppMenuActionRequested -= OnAppMenuActionRequested;
-        _settingsWindow.SaveRequested -= OnSettingsSaveRequested;
+        _settingsWindow.SaveAllRequested -= OnSettingsSaveAllRequested;
         _settingsWindow.DiscoveryRequested -= OnSettingsDiscoveryRequested;
         _hostServer.ClientRegistered -= OnHostClientRegistered;
         _hostServer.ClientDisconnected -= OnHostClientDisconnected;
@@ -175,7 +175,7 @@ public sealed class TrayFolderController : IDisposable
         _settingsWindow.ShowAndActivate();
     }
 
-    private void RefreshSettingsEntries(string? selectAppId = null)
+    private void RefreshSettingsEntries()
     {
         _settingsWindow.SetApps(
             EnabledApps
@@ -184,39 +184,57 @@ public sealed class TrayFolderController : IDisposable
                     app.DisplayName,
                     app.ExecutablePath,
                     app.TrayMode,
-                    SupportsDiscovery: IsAutoPower(app)))
-                .ToList(),
-            selectAppId);
+                    SupportsDiscovery: TrayAppCatalog.FindSpec(app.AppId) is not null))
+                .ToList());
     }
 
-    private async Task EnsureAutoPowerPathAsync(CancellationToken cancellationToken)
+    /// <summary>
+    /// 경로가 비어 있거나 더 이상 존재하지 않는 앱만 자동 탐색해 저장합니다.
+    /// 사용자가 지정한 유효한 경로는 덮어쓰지 않습니다.
+    /// </summary>
+    private async Task EnsureAppPathsAsync(CancellationToken cancellationToken)
     {
-        var autoPower = FindApp(TrayPipeProtocol.AutoPowerAppId);
-        if (autoPower is null || !string.IsNullOrWhiteSpace(autoPower.ExecutablePath))
+        var changed = false;
+        foreach (var app in EnabledApps.ToList())
         {
-            return;
-        }
-
-        try
-        {
-            var discovered = await _discoveryService.DiscoverAsync(cancellationToken).ConfigureAwait(true);
-            if (discovered.ExecutablePath is null)
+            if (!string.IsNullOrWhiteSpace(app.ExecutablePath) && File.Exists(app.ExecutablePath))
             {
-                await _logger.InfoAsync(discovered.Detail ?? "AutoPower 자동 탐색 결과가 없습니다.");
-                return;
+                continue;
             }
 
-            autoPower.ExecutablePath = discovered.ExecutablePath;
+            var spec = TrayAppCatalog.FindSpec(app.AppId);
+            if (spec is null)
+            {
+                continue;
+            }
+
+            try
+            {
+                var discovered = await _discoveryService.DiscoverAsync(spec, cancellationToken).ConfigureAwait(true);
+                if (discovered.ExecutablePath is null)
+                {
+                    await _logger.InfoAsync(discovered.Detail ?? $"{app.DisplayName} 자동 탐색 결과가 없습니다.");
+                    continue;
+                }
+
+                app.ExecutablePath = discovered.ExecutablePath;
+                changed = true;
+                await _logger.InfoAsync(
+                    $"{app.DisplayName} 경로를 자동 탐색하고 저장했습니다 ({discovered.Source}): {discovered.ExecutablePath}");
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception exception)
+            {
+                await _logger.ErrorAsync($"{app.DisplayName} 자동 탐색 중 오류가 발생했습니다.", exception);
+            }
+        }
+
+        if (changed)
+        {
             await _configService.SaveAsync(_config, cancellationToken).ConfigureAwait(true);
-            await _logger.InfoAsync($"AutoPower 경로를 자동 탐색하고 저장했습니다 ({discovered.Source}): {discovered.ExecutablePath}");
-        }
-        catch (OperationCanceledException)
-        {
-            throw;
-        }
-        catch (Exception exception)
-        {
-            await _logger.ErrorAsync("AutoPower 자동 탐색 중 오류가 발생했습니다.", exception);
         }
     }
 
@@ -234,18 +252,35 @@ public sealed class TrayFolderController : IDisposable
                 bool isRunning;
                 if (_hostServer.IsClientConnected(app.AppId))
                 {
+                    // 파이프가 연결돼 있으면 프로세스 스캔보다 연결 상태를 우선합니다.
                     isRunning = true;
                 }
-                else if (string.IsNullOrWhiteSpace(app.ExecutablePath))
+                else if (IsAutoPower(app))
                 {
-                    isRunning = false;
+                    // 제품 정보 기반 검사라 설치 위치가 설정 경로와 달라도 잡습니다.
+                    var status = await _processService.GetStatusAsync(null, cancellationToken).ConfigureAwait(true);
+                    isRunning = status.IsRunning;
                 }
                 else
                 {
-                    var status = IsAutoPower(app)
-                        ? await _processService.GetStatusAsync(app.ExecutablePath, cancellationToken).ConfigureAwait(true)
-                        : await _processService.GetStatusByPathAsync(app.ExecutablePath, cancellationToken).ConfigureAwait(true);
-                    isRunning = status.IsRunning;
+                    isRunning = false;
+                    if (!string.IsNullOrWhiteSpace(app.ExecutablePath))
+                    {
+                        var status = await _processService
+                            .GetStatusByPathAsync(app.ExecutablePath, cancellationToken)
+                            .ConfigureAwait(true);
+                        isRunning = status.IsRunning;
+                    }
+
+                    // 설정 경로와 다른 위치(설치본/개발 빌드)에서 실행 중인 경우를 위해
+                    // 실행 파일 이름으로도 확인합니다.
+                    if (!isRunning && TrayAppCatalog.FindSpec(app.AppId) is { } spec)
+                    {
+                        var status = await _processService
+                            .GetStatusByExecutableNamesAsync(spec.ExecutableFileNames, cancellationToken)
+                            .ConfigureAwait(true);
+                        isRunning = status.IsRunning;
+                    }
                 }
 
                 if (_disposed)
@@ -290,27 +325,42 @@ public sealed class TrayFolderController : IDisposable
         {
             if (_hostServer.IsClientConnected(appId))
             {
+                // 연결된 앱은 파이프 Activate만 사용합니다. 창 복원 폴백은 파이프가
+                // 정말 없는 경우(연동 전 버전, 미실행)를 위한 것입니다.
                 var commandResult = await _hostServer
                     .SendCommandAsync(appId, TrayHostCommand.Activate, PipeCommandTimeout, _lifetimeCancellation.Token)
                     .ConfigureAwait(true);
-                if (commandResult.Succeeded)
+                if (!commandResult.Succeeded)
                 {
-                    await Task.Delay(350, _lifetimeCancellation.Token).ConfigureAwait(true);
-                    await RefreshStatusSafelyAsync().ConfigureAwait(true);
-                    return;
+                    await _logger.InfoAsync(
+                        $"파이프 Activate에 실패했습니다 ({appId}): {commandResult.ErrorMessage}");
+                    if (_hostServer.IsClientConnected(appId))
+                    {
+                        MessageBox.Show(
+                            commandResult.ErrorMessage ?? $"{app.DisplayName} 창을 여는 데 실패했습니다.",
+                            "Tray Folder",
+                            MessageBoxButton.OK,
+                            MessageBoxImage.Warning);
+                    }
                 }
 
-                await _logger.InfoAsync(
-                    $"파이프 Activate에 실패해 창 복원 폴백을 사용합니다 ({appId}): {commandResult.ErrorMessage}");
+                await Task.Delay(350, _lifetimeCancellation.Token).ConfigureAwait(true);
+                await RefreshStatusSafelyAsync().ConfigureAwait(true);
+                return;
             }
 
             var result = IsAutoPower(app)
                 ? await _processService
                     .ActivateOrLaunchAsync(app.ExecutablePath, _lifetimeCancellation.Token)
                     .ConfigureAwait(true)
-                : await _processService
-                    .ActivateOrLaunchByPathAsync(app.ExecutablePath, app.DisplayName, _lifetimeCancellation.Token)
-                    .ConfigureAwait(true);
+                : TrayAppCatalog.FindSpec(app.AppId) is { } spec
+                    ? await _processService
+                        .ActivateOrLaunchByNamesAsync(
+                            spec.ExecutableFileNames, app.ExecutablePath, app.DisplayName, _lifetimeCancellation.Token)
+                        .ConfigureAwait(true)
+                    : await _processService
+                        .ActivateOrLaunchByPathAsync(app.ExecutablePath, app.DisplayName, _lifetimeCancellation.Token)
+                        .ConfigureAwait(true);
             if (!result.Succeeded)
             {
                 if (result.Exception is not null)
@@ -446,72 +496,106 @@ public sealed class TrayFolderController : IDisposable
         }
     }
 
-    private async void OnSettingsSaveRequested(object? sender, SettingsSaveRequest request)
+    private async void OnSettingsSaveAllRequested(object? sender, IReadOnlyList<SettingsSaveRequest> requests)
     {
-        var app = FindApp(request.AppId);
-        if (app is null)
+        // 1단계: 전체 검증. 하나라도 잘못되면 아무것도 저장하지 않습니다.
+        var validated = new List<(TrayAppConfig App, string Path, TrayMode Mode)>();
+        foreach (var request in requests)
         {
-            _settingsWindow.ShowMessage("알 수 없는 앱입니다.", isError: true);
-            return;
-        }
-
-        string normalizedPath;
-        if (IsAutoPower(app))
-        {
-            var validation = _pathValidator.ValidateAutoPower(request.ExecutablePath);
-            if (!validation.IsValid || validation.NormalizedPath is null)
+            var app = FindApp(request.AppId);
+            if (app is null)
             {
-                _settingsWindow.ShowMessage(validation.UserMessage ?? "올바른 실행 파일을 지정해 주세요.", isError: true);
-                return;
+                continue;
             }
 
-            normalizedPath = validation.NormalizedPath;
-        }
-        else if (string.IsNullOrWhiteSpace(request.ExecutablePath))
-        {
-            // 다른 앱은 경로 없이도 파이프 연동이 동작하므로 빈 경로를 허용합니다.
-            normalizedPath = string.Empty;
-        }
-        else
-        {
-            var validation = _pathValidator.ValidateGeneric(request.ExecutablePath, app.DisplayName);
-            if (!validation.IsValid || validation.NormalizedPath is null)
+            string normalizedPath;
+            if (IsAutoPower(app))
             {
-                _settingsWindow.ShowMessage(validation.UserMessage ?? "올바른 실행 파일을 지정해 주세요.", isError: true);
-                return;
+                if (string.IsNullOrWhiteSpace(request.ExecutablePath))
+                {
+                    normalizedPath = string.Empty;
+                }
+                else
+                {
+                    var validation = _pathValidator.ValidateAutoPower(request.ExecutablePath);
+                    if (!validation.IsValid || validation.NormalizedPath is null)
+                    {
+                        _settingsWindow.ShowMessage(
+                            $"{app.DisplayName}: {validation.UserMessage ?? "올바른 실행 파일을 지정해 주세요."}",
+                            isError: true);
+                        return;
+                    }
+
+                    normalizedPath = validation.NormalizedPath;
+                }
             }
-
-            normalizedPath = validation.NormalizedPath;
-        }
-
-        try
-        {
-            var requestedMode = TrayPipeProtocol.TryParseTrayMode(request.TrayMode, out var parsedMode)
-                ? parsedMode
-                : TrayMode.Standalone;
-            app.ExecutablePath = normalizedPath;
-            app.TrayMode = TrayPipeProtocol.FormatTrayMode(requestedMode);
-            await _configService.SaveAsync(_config, _lifetimeCancellation.Token).ConfigureAwait(true);
-            UpdateAppPresentation(app);
-            RefreshSettingsEntries(app.AppId);
-            if (_hostServer.IsClientConnected(app.AppId))
+            else if (string.IsNullOrWhiteSpace(request.ExecutablePath))
             {
-                var sent = await _hostServer
-                    .SendTrayModeAsync(app.AppId, requestedMode, _lifetimeCancellation.Token)
-                    .ConfigureAwait(true);
-                _settingsWindow.ShowMessage(
-                    sent
-                        ? $"설정을 저장하고 {app.DisplayName}에 즉시 적용했습니다."
-                        : $"설정을 저장했지만 {app.DisplayName}에 적용하지 못했습니다. 다시 연결되면 적용됩니다.",
-                    isError: !sent);
+                // 경로 없이도 파이프 연동은 동작하므로 빈 경로를 허용합니다.
+                normalizedPath = string.Empty;
             }
             else
             {
-                _settingsWindow.ShowMessage(
-                    $"설정을 저장했습니다. {app.DisplayName}이(가) 연결되면 트레이 모드가 적용됩니다.",
-                    isError: false);
+                var validation = _pathValidator.ValidateGeneric(request.ExecutablePath, app.DisplayName);
+                if (!validation.IsValid || validation.NormalizedPath is null)
+                {
+                    _settingsWindow.ShowMessage(
+                        $"{app.DisplayName}: {validation.UserMessage ?? "올바른 실행 파일을 지정해 주세요."}",
+                        isError: true);
+                    return;
+                }
+
+                normalizedPath = validation.NormalizedPath;
             }
 
+            var mode = TrayPipeProtocol.TryParseTrayMode(request.TrayMode, out var parsedMode)
+                ? parsedMode
+                : TrayMode.Standalone;
+            validated.Add((app, normalizedPath, mode));
+        }
+
+        // 2단계: 일괄 적용 후 한 번에 저장하고, 연결된 앱에는 모드를 즉시 적용합니다.
+        try
+        {
+            foreach (var (app, path, mode) in validated)
+            {
+                app.ExecutablePath = path;
+                app.TrayMode = TrayPipeProtocol.FormatTrayMode(mode);
+            }
+
+            await _configService.SaveAsync(_config, _lifetimeCancellation.Token).ConfigureAwait(true);
+
+            var appliedCount = 0;
+            var failedNames = new List<string>();
+            foreach (var (app, _, mode) in validated)
+            {
+                UpdateAppPresentation(app);
+                if (!_hostServer.IsClientConnected(app.AppId))
+                {
+                    continue;
+                }
+
+                var sent = await _hostServer
+                    .SendTrayModeAsync(app.AppId, mode, _lifetimeCancellation.Token)
+                    .ConfigureAwait(true);
+                if (sent)
+                {
+                    appliedCount++;
+                }
+                else
+                {
+                    failedNames.Add(app.DisplayName);
+                }
+            }
+
+            RefreshSettingsEntries();
+            _settingsWindow.ShowMessage(
+                failedNames.Count > 0
+                    ? $"모든 앱 설정을 저장했지만 일부 앱에 적용하지 못했습니다: {string.Join(", ", failedNames)}"
+                    : appliedCount > 0
+                        ? $"모든 앱 설정을 저장하고 연결된 앱 {appliedCount}개에 즉시 적용했습니다."
+                        : "모든 앱 설정을 저장했습니다. 각 앱이 연결되면 트레이 모드가 적용됩니다.",
+                isError: failedNames.Count > 0);
             await RefreshStatusSafelyAsync().ConfigureAwait(true);
         }
         catch (OperationCanceledException)
@@ -527,37 +611,39 @@ public sealed class TrayFolderController : IDisposable
     private async void OnSettingsDiscoveryRequested(object? sender, string appId)
     {
         var app = FindApp(appId);
-        if (app is null || !IsAutoPower(app))
+        var spec = app is null ? null : TrayAppCatalog.FindSpec(app.AppId);
+        if (app is null || spec is null)
         {
             return;
         }
 
-        _settingsWindow.ShowMessage("AutoPower를 찾는 중입니다…", isError: false);
+        _settingsWindow.ShowMessage($"{app.DisplayName}을(를) 찾는 중입니다…", isError: false);
         try
         {
             var result = await _discoveryService
-                .DiscoverAsync(_lifetimeCancellation.Token)
+                .DiscoverAsync(spec, _lifetimeCancellation.Token)
                 .ConfigureAwait(true);
             if (result.ExecutablePath is null)
             {
-                _settingsWindow.ShowMessage(result.Detail ?? "AutoPower를 자동으로 찾지 못했습니다.", isError: true);
+                _settingsWindow.ShowMessage(
+                    result.Detail ?? $"{app.DisplayName}을(를) 자동으로 찾지 못했습니다.", isError: true);
                 return;
             }
 
-            app.ExecutablePath = result.ExecutablePath;
-            await _configService.SaveAsync(_config, _lifetimeCancellation.Token).ConfigureAwait(true);
-            RefreshSettingsEntries(app.AppId);
-            _settingsWindow.ShowMessage($"AutoPower를 찾아 저장했습니다. ({result.Source})", isError: false);
-            UpdateAppPresentation(app);
-            await RefreshStatusSafelyAsync().ConfigureAwait(true);
+            // 다른 앱의 편집 중인 값이 날아가지 않도록 해당 앱의 입력값만 채우고,
+            // 실제 저장은 저장 버튼에서 한 번에 합니다.
+            _settingsWindow.SetAppPath(app.AppId, result.ExecutablePath);
+            _settingsWindow.ShowMessage(
+                $"{app.DisplayName}을(를) 찾았습니다 ({result.Source}). 저장 버튼을 눌러 적용해 주세요.",
+                isError: false);
         }
         catch (OperationCanceledException)
         {
         }
         catch (Exception exception)
         {
-            await _logger.ErrorAsync("설정 화면의 AutoPower 자동 탐색에 실패했습니다.", exception);
-            _settingsWindow.ShowMessage("AutoPower 자동 탐색에 실패했습니다. 로그를 확인해 주세요.", isError: true);
+            await _logger.ErrorAsync($"설정 화면의 {app.DisplayName} 자동 탐색에 실패했습니다.", exception);
+            _settingsWindow.ShowMessage($"{app.DisplayName} 자동 탐색에 실패했습니다. 로그를 확인해 주세요.", isError: true);
         }
     }
 
@@ -587,6 +673,27 @@ public sealed class TrayFolderController : IDisposable
                 await _logger.InfoAsync(
                     $"{app.DisplayName}이(가) 파이프에 연결되었습니다 (PID {registration.ProcessId}).").ConfigureAwait(true);
                 _popupWindow.SetRunningState(app.AppId, true);
+
+                // 설정 경로가 비어 있거나 파일이 사라진 경우에만 연결된 프로세스의
+                // 실제 exe 경로로 채웁니다. 정식 설치 경로처럼 사용자가 쓰는 유효한
+                // 경로를 dev 빌드 연결이 덮어쓰지 않게 합니다. 잘못된 사본 재실행은
+                // 실행 폴백의 중복 실행 방지 가드가 막습니다.
+                var hasValidConfiguredPath =
+                    !string.IsNullOrWhiteSpace(app.ExecutablePath) && File.Exists(app.ExecutablePath);
+                if (!hasValidConfiguredPath)
+                {
+                    var connectedPath = AutoPowerProcessService.TryGetProcessPath(registration.ProcessId);
+                    if (!string.IsNullOrWhiteSpace(connectedPath) &&
+                        File.Exists(connectedPath) &&
+                        !string.Equals(connectedPath, app.ExecutablePath, StringComparison.OrdinalIgnoreCase))
+                    {
+                        app.ExecutablePath = connectedPath;
+                        await _configService.SaveAsync(_config, _lifetimeCancellation.Token).ConfigureAwait(true);
+                        UpdateAppPresentation(app);
+                        await _logger.InfoAsync(
+                            $"{app.DisplayName} 실행 파일 경로를 연결된 프로세스 경로로 채웠습니다: {connectedPath}").ConfigureAwait(true);
+                    }
+                }
                 var mode = ConfiguredTrayMode(app);
                 var sent = await _hostServer
                     .SendTrayModeAsync(app.AppId, mode, _lifetimeCancellation.Token)

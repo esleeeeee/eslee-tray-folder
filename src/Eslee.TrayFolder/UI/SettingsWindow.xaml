@@ -2,10 +2,10 @@
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="Tray Folder 설정"
-        Width="610"
-        Height="470"
-        MinWidth="560"
-        MinHeight="440"
+        Width="640"
+        Height="640"
+        MinWidth="580"
+        MinHeight="480"
         WindowStartupLocation="CenterScreen"
         ShowInTaskbar="True"
         Closing="OnClosing">
@@ -13,64 +13,35 @@
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
-            <RowDefinition Height="Auto" />
-            <RowDefinition Height="Auto" />
-            <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
         <TextBlock FontSize="23" FontWeight="SemiBold" Text="Tray Folder 설정" />
         <TextBlock Grid.Row="1"
-                   Margin="0,8,0,18"
+                   Margin="0,8,0,14"
                    Foreground="#FF667085"
-                   Text="앱별 실행 파일과 트레이 모드를 설정합니다. 트레이 모드는 앱이 연결되면 자동으로 적용됩니다."
+                   Text="앱별 실행 파일과 트레이 모드를 설정하고 저장 버튼으로 한 번에 저장합니다. 트레이 모드는 앱이 연결되면 자동으로 적용됩니다."
                    TextWrapping="Wrap" />
 
-        <StackPanel Grid.Row="2" Margin="0,0,0,14">
-            <TextBlock Margin="0,0,0,6" FontWeight="SemiBold" Text="앱 선택" />
-            <ComboBox x:Name="AppSelector"
-                      Height="31"
-                      VerticalContentAlignment="Center"
-                      SelectionChanged="OnAppSelectionChanged" />
-        </StackPanel>
-
-        <Grid Grid.Row="3">
-            <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="*" />
-                <ColumnDefinition Width="Auto" />
-                <ColumnDefinition Width="Auto" />
-            </Grid.ColumnDefinitions>
-            <StackPanel>
-                <TextBlock x:Name="ExecutablePathLabel" Margin="0,0,0,6" FontWeight="SemiBold" Text="실행 파일" />
-                <TextBox x:Name="ExecutablePathTextBox" Height="31" VerticalContentAlignment="Center" />
-            </StackPanel>
-            <Button Grid.Column="1" Margin="10,23,0,0" Padding="13,5" Content="찾아보기" Click="OnBrowseClick" />
-            <Button x:Name="DiscoverButton"
-                    Grid.Column="2"
-                    Margin="8,23,0,0"
-                    Padding="13,5"
-                    Content="자동 탐색"
-                    Click="OnDiscoverClick" />
-        </Grid>
-
-        <StackPanel Grid.Row="4" Margin="0,18,0,0">
-            <TextBlock Margin="0,0,0,6" FontWeight="SemiBold" Text="트레이 모드" />
-            <RadioButton x:Name="StandaloneModeRadio"
-                         Content="Standalone — 앱이 자체 트레이 아이콘을 표시합니다."
-                         IsChecked="True" />
-            <RadioButton x:Name="HostedModeRadio"
-                         Margin="0,5,0,0"
-                         Content="Hosted — 앱 트레이 아이콘을 숨기고 Tray Folder가 대신 관리합니다." />
-        </StackPanel>
+        <ScrollViewer Grid.Row="2"
+                      Margin="0,0,-8,0"
+                      Padding="0,0,8,0"
+                      VerticalScrollBarVisibility="Auto">
+            <StackPanel x:Name="AppSectionsPanel" />
+        </ScrollViewer>
 
         <TextBlock x:Name="MessageText"
-                   Grid.Row="5"
+                   Grid.Row="3"
                    Margin="0,13,0,0"
                    Foreground="#FFC43D3D"
                    TextWrapping="Wrap" />
 
-        <StackPanel Grid.Row="6" HorizontalAlignment="Right" Orientation="Horizontal">
+        <StackPanel Grid.Row="4"
+                    Margin="0,13,0,0"
+                    HorizontalAlignment="Right"
+                    Orientation="Horizontal">
             <Button Margin="0,0,8,0" Padding="18,7" Content="닫기" Click="OnCloseClick" />
             <Button Padding="18,7" Content="저장" IsDefault="True" Click="OnSaveClick" />
         </StackPanel>

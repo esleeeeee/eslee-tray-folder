@@ -28,7 +28,7 @@ public sealed class TrayFolderConfig
                 AppId = "eslee.folderlocker",
                 DisplayName = "Folder Locker",
                 ExecutablePath = string.Empty,
-                TrayMode = "standalone",
+                TrayMode = "hosted",
                 Order = 1,
                 Enabled = true,
             },
