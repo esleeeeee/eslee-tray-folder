@@ -37,7 +37,7 @@
                 </Grid.ColumnDefinitions>
                 <StackPanel>
                     <TextBlock FontSize="21" FontWeight="SemiBold" Foreground="#FF172033" Text="Tray Folder" />
-                    <TextBlock Margin="0,3,0,0" FontSize="11" Foreground="#FF778198" Text="eslee apps" />
+                    <TextBlock x:Name="SubtitleText" Margin="0,3,0,0" FontSize="11" Foreground="#FF778198" Text="eslee apps" />
                 </StackPanel>
                 <Button x:Name="SettingsButton"
                         Grid.Column="1"

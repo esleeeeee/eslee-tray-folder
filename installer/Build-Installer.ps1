@@ -10,7 +10,7 @@ Requires: .NET SDK, Inno Setup 6 (ISCC.exe on PATH or in a standard location).
 #>
 [CmdletBinding()]
 param(
-    [string]$Version = "0.1.1"
+    [string]$Version = "0.1.2"
 )
 
 Set-StrictMode -Version Latest

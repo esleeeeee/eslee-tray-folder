@@ -6,7 +6,7 @@
 ; never touched by the uninstaller, so settings survive reinstalls.
 
 #ifndef AppVersion
-  #define AppVersion "0.1.1"
+  #define AppVersion "0.1.2"
 #endif
 #ifndef SourceDir
   #define SourceDir "..\artifacts\publish"

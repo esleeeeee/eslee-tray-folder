@@ -10,6 +10,10 @@ public sealed class TrayFolderConfig
     [JsonPropertyName("apps")]
     public List<TrayAppConfig> Apps { get; set; } = [];
 
+    /// <summary>마지막 업데이트 확인 시각(UTC, ISO 8601). 매 실행마다 요청하지 않기 위한 캐시입니다.</summary>
+    [JsonPropertyName("lastUpdateCheckUtc")]
+    public string? LastUpdateCheckUtc { get; set; }
+
     public static TrayFolderConfig CreateDefault() => new()
     {
         Apps =

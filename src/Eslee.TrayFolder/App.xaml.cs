@@ -57,6 +57,7 @@ public partial class App : System.Windows.Application
                 validator,
                 new AutoPowerProcessService(validator, new WindowRestorer()),
                 _hostServer,
+                new UpdateCheckService(),
                 _logger);
             await _controller.InitializeAsync(CancellationToken.None).ConfigureAwait(true);
             _singleInstance.Listen(() => Dispatcher.BeginInvoke(_controller.ActivateFromSecondInstance));
