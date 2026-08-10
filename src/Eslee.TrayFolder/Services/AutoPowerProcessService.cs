@@ -47,6 +47,103 @@ public sealed class AutoPowerProcessService
                 : new AutoPowerStatus(true, $"PID {process.Id}");
         }, cancellationToken);
 
+    /// <summary>
+    /// 실행 파일 이름 후보만으로 실행 여부를 확인합니다. 설치본과 개발 빌드처럼
+    /// 설정 경로와 다른 위치에서 실행 중인 인스턴스도 '실행 중'으로 잡습니다.
+    /// </summary>
+    public Task<AutoPowerStatus> GetStatusByExecutableNamesAsync(
+        IReadOnlyList<string> executableFileNames,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(executableFileNames);
+        return Task.Run(() =>
+        {
+            foreach (var fileName in executableFileNames)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var processName = Path.GetFileNameWithoutExtension(fileName);
+                if (string.IsNullOrWhiteSpace(processName))
+                {
+                    continue;
+                }
+
+                Process[] processes;
+                try
+                {
+                    processes = Process.GetProcessesByName(processName);
+                }
+                catch (InvalidOperationException)
+                {
+                    continue;
+                }
+
+                var found = processes.Length > 0;
+                foreach (var process in processes)
+                {
+                    process.Dispose();
+                }
+
+                if (found)
+                {
+                    return new AutoPowerStatus(true, $"process {processName}");
+                }
+            }
+
+            return new AutoPowerStatus(false);
+        }, cancellationToken);
+    }
+
+    /// <summary>
+    /// AutoPower 외 앱을 위한 창 복원 또는 실행입니다. 설정 경로와 다른 위치에서
+    /// 같은 이름의 프로세스(설치본/다른 빌드)가 실행 중이면 중복 실행을 막기 위해
+    /// 새로 실행하지 않고 그 프로세스의 창 복원만 시도합니다.
+    /// </summary>
+    public async Task<AutoPowerOperationResult> ActivateOrLaunchByNamesAsync(
+        IReadOnlyList<string> executableFileNames,
+        string? configuredPath,
+        string displayName,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(executableFileNames);
+
+        if (!string.IsNullOrWhiteSpace(configuredPath))
+        {
+            using var exactProcess = await Task.Run(
+                () => FindProcessByPath(configuredPath),
+                cancellationToken).ConfigureAwait(false);
+            if (exactProcess is not null)
+            {
+                var restored = await _windowRestorer
+                    .TryRestoreAsync(exactProcess, cancellationToken)
+                    .ConfigureAwait(false);
+                return restored
+                    ? new AutoPowerOperationResult(true)
+                    : new AutoPowerOperationResult(
+                        false,
+                        $"{displayName}은(는) 실행 중이지만 복원할 메인 창을 찾지 못했습니다.");
+            }
+        }
+
+        using var anyInstance = await Task.Run(
+            () => FindProcessByAnyName(executableFileNames),
+            cancellationToken).ConfigureAwait(false);
+        if (anyInstance is not null)
+        {
+            var restoredAny = await _windowRestorer
+                .TryRestoreAsync(anyInstance, cancellationToken)
+                .ConfigureAwait(false);
+            return restoredAny
+                ? new AutoPowerOperationResult(true)
+                : new AutoPowerOperationResult(
+                    false,
+                    $"{displayName}이(가) 다른 위치에서 이미 실행 중입니다. 중복 실행을 막기 위해 새로 실행하지 않았습니다. " +
+                    "실행 중인 버전이 연동을 지원하지 않으면 종료 후 최신 빌드로 다시 실행해 주세요.");
+        }
+
+        return await ActivateOrLaunchByPathAsync(configuredPath, displayName, cancellationToken)
+            .ConfigureAwait(false);
+    }
+
     /// <summary>AutoPower 외 앱을 위한 경로 기반 창 복원 또는 실행입니다.</summary>
     public async Task<AutoPowerOperationResult> ActivateOrLaunchByPathAsync(
         string? configuredPath,
@@ -130,6 +227,24 @@ public sealed class AutoPowerProcessService
                         "AutoPower는 실행 중이지만 복원할 메인 창을 찾지 못했습니다. AutoPower 트레이 아이콘에서 직접 열어 주세요.");
             }
 
+            // 설정 경로와 다른 위치(설치본/다른 빌드)의 AutoPower가 이미 실행 중이면
+            // 중복 실행을 막기 위해 절대 새로 실행하지 않습니다.
+            using var otherInstance = await Task.Run(
+                () => FindMatchingProcess(null),
+                cancellationToken).ConfigureAwait(false);
+            if (otherInstance is not null)
+            {
+                var restoredOther = await _windowRestorer
+                    .TryRestoreAsync(otherInstance, cancellationToken)
+                    .ConfigureAwait(false);
+                return restoredOther
+                    ? new AutoPowerOperationResult(true)
+                    : new AutoPowerOperationResult(
+                        false,
+                        "AutoPower가 다른 위치에서 이미 실행 중입니다. 중복 실행을 막기 위해 새로 실행하지 않았습니다. " +
+                        "실행 중인 버전이 연동을 지원하지 않으면 종료 후 최신 빌드로 다시 실행해 주세요.");
+            }
+
             await Task.Run(() =>
             {
                 cancellationToken.ThrowIfCancellationRequested();
@@ -155,6 +270,65 @@ public sealed class AutoPowerProcessService
                 "AutoPower를 실행하거나 창을 복원하지 못했습니다. 자세한 내용은 로그를 확인해 주세요.",
                 exception);
         }
+    }
+
+    /// <summary>프로세스 id로 실제 실행 파일 경로를 조회합니다. 접근 불가/종료 시 null입니다.</summary>
+    public static string? TryGetProcessPath(int processId)
+    {
+        try
+        {
+            using var process = Process.GetProcessById(processId);
+            return process.MainModule?.FileName;
+        }
+        catch (Exception exception) when (exception is ArgumentException
+            or InvalidOperationException
+            or System.ComponentModel.Win32Exception
+            or NotSupportedException)
+        {
+            return null;
+        }
+    }
+
+    private static Process? FindProcessByAnyName(IReadOnlyList<string> executableFileNames)
+    {
+        foreach (var fileName in executableFileNames)
+        {
+            var processName = Path.GetFileNameWithoutExtension(fileName);
+            if (string.IsNullOrWhiteSpace(processName))
+            {
+                continue;
+            }
+
+            Process[] processes;
+            try
+            {
+                processes = Process.GetProcessesByName(processName);
+            }
+            catch (InvalidOperationException)
+            {
+                continue;
+            }
+
+            Process? match = null;
+            foreach (var process in processes)
+            {
+                if (match is null)
+                {
+                    match = process;
+                }
+                else
+                {
+                    process.Dispose();
+                }
+            }
+
+            if (match is not null)
+            {
+                return match;
+            }
+        }
+
+        return null;
     }
 
     private static Process? FindProcessByPath(string configuredPath)

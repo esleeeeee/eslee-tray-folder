@@ -335,6 +335,83 @@ public sealed class TrayHostServerTests
         }
     }
 
+    [TestMethod]
+    public async Task FiveClientsRacingAtStartupAllRegister()
+    {
+        // 실제 시나리오 재현: 앱 5개가 먼저 실행되어 재시도 중이고, 그 뒤 호스트가 시작됩니다.
+        var pipeName = CreatePipeName();
+        var appIds = new[] { "app.a", "app.b", "app.c", "app.d", "app.e" };
+        using var server = new TrayHostServer(pipeName);
+        var registeredSignal = new SemaphoreSlim(0);
+        server.ClientRegistered += (_, _) => registeredSignal.Release();
+
+        var clients = new List<NamedPipeClientStream>();
+        var writers = new List<StreamWriter>();
+        try
+        {
+            var connectTasks = appIds.Select(async appId =>
+            {
+                var deadline = DateTime.UtcNow + TestTimeout;
+                while (true)
+                {
+                    var client = CreateClient(pipeName);
+                    try
+                    {
+                        await client.ConnectAsync(500);
+                        lock (clients)
+                        {
+                            clients.Add(client);
+                        }
+
+                        var writer = CreateWriter(client);
+                        lock (writers)
+                        {
+                            writers.Add(writer);
+                        }
+
+                        await writer.WriteLineAsync(
+                            $$"""{"type":"register","protocolVersion":1,"appId":"{{appId}}","processId":77}""");
+                        return;
+                    }
+                    catch (Exception exception) when (
+                        exception is TimeoutException or IOException &&
+                        DateTime.UtcNow < deadline)
+                    {
+                        await client.DisposeAsync();
+                        await Task.Delay(100);
+                    }
+                }
+            }).ToList();
+
+            // 클라이언트들이 폴링을 시작한 뒤에 서버를 시작합니다.
+            await Task.Delay(200);
+            server.Start();
+            await Task.WhenAll(connectTasks).WaitAsync(TestTimeout);
+
+            for (var i = 0; i < appIds.Length; i++)
+            {
+                Assert.IsTrue(await registeredSignal.WaitAsync(TestTimeout), $"등록 이벤트가 부족합니다 (index {i}).");
+            }
+
+            foreach (var appId in appIds)
+            {
+                Assert.IsTrue(server.IsClientConnected(appId), $"{appId}가 연결 상태가 아닙니다.");
+            }
+        }
+        finally
+        {
+            foreach (var writer in writers)
+            {
+                await writer.DisposeAsync();
+            }
+
+            foreach (var client in clients)
+            {
+                await client.DisposeAsync();
+            }
+        }
+    }
+
     private static string CreatePipeName() =>
         "eslee.trayfolder.server-test." + Guid.NewGuid().ToString("N");
 

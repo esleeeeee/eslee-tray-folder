@@ -19,6 +19,10 @@ public sealed class ConfigServiceTests
         Assert.HasCount(5, result.Config.Apps);
         Assert.AreEqual("eslee.autopower", result.Config.Apps[0].AppId);
         Assert.AreEqual("hosted", result.Config.Apps[0].TrayMode);
+        Assert.AreEqual(
+            "hosted",
+            result.Config.Apps.Single(app => app.AppId == "eslee.folderlocker").TrayMode,
+            "Folder Locker의 기본 트레이 모드는 Hosted여야 합니다.");
         CollectionAssert.AreEqual(
             new[]
             {

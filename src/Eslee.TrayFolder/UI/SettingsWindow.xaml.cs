@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Media;
 using Microsoft.Win32;
 
 namespace Eslee.TrayFolder.UI;
@@ -13,80 +14,63 @@ public sealed record SettingsAppEntry(
     string TrayMode,
     bool SupportsDiscovery);
 
-/// <summary>설정 창의 저장 버튼이 전달하는 값 묶음입니다.</summary>
+/// <summary>앱 하나의 저장 값 묶음입니다. 저장 버튼은 모든 앱의 목록을 한 번에 전달합니다.</summary>
 public sealed record SettingsSaveRequest(string AppId, string ExecutablePath, string TrayMode);
 
 public partial class SettingsWindow : Window
 {
-    private readonly List<SettingsAppEntry> _apps = [];
+    private readonly List<AppSection> _sections = [];
     private bool _allowClose;
-    private bool _loadingSelection;
 
     public SettingsWindow()
     {
         InitializeComponent();
     }
 
-    public event EventHandler<SettingsSaveRequest>? SaveRequested;
+    /// <summary>저장 버튼: 화면의 모든 앱 설정을 한 번에 전달합니다.</summary>
+    public event EventHandler<IReadOnlyList<SettingsSaveRequest>>? SaveAllRequested;
 
-    /// <summary>자동 탐색 버튼 클릭. 현재 선택된 앱 id를 전달합니다(현재는 AutoPower만 지원).</summary>
+    /// <summary>앱별 자동 탐색 버튼 클릭. 해당 앱 id를 전달합니다.</summary>
     public event EventHandler<string>? DiscoveryRequested;
 
-    public string? SelectedAppId =>
-        AppSelector.SelectedIndex >= 0 && AppSelector.SelectedIndex < _apps.Count
-            ? _apps[AppSelector.SelectedIndex].AppId
-            : null;
-
-    public string ExecutablePath
+    /// <summary>모든 앱 섹션을 다시 만듭니다.</summary>
+    public void SetApps(IReadOnlyList<SettingsAppEntry> apps)
     {
-        get => ExecutablePathTextBox.Text;
-        set => ExecutablePathTextBox.Text = value;
-    }
-
-    public string TrayMode
-    {
-        get => HostedModeRadio.IsChecked == true ? "hosted" : "standalone";
-        set
+        AppSectionsPanel.Children.Clear();
+        _sections.Clear();
+        for (var index = 0; index < apps.Count; index++)
         {
-            var hosted = string.Equals(value, "hosted", StringComparison.OrdinalIgnoreCase);
-            HostedModeRadio.IsChecked = hosted;
-            StandaloneModeRadio.IsChecked = !hosted;
-        }
-    }
-
-    /// <summary>앱 목록을 채우고 선택을 복원합니다. 저장 후 갱신에도 사용합니다.</summary>
-    public void SetApps(IReadOnlyList<SettingsAppEntry> apps, string? selectAppId = null)
-    {
-        var previousSelection = selectAppId ?? SelectedAppId;
-        _apps.Clear();
-        _apps.AddRange(apps);
-        _loadingSelection = true;
-        try
-        {
-            AppSelector.Items.Clear();
-            foreach (var app in _apps)
+            var section = BuildSection(apps[index]);
+            _sections.Add(section);
+            AppSectionsPanel.Children.Add(section.Root);
+            if (index < apps.Count - 1)
             {
-                AppSelector.Items.Add(app.DisplayName);
+                AppSectionsPanel.Children.Add(new Border
+                {
+                    Height = 1,
+                    Margin = new Thickness(0, 16, 0, 16),
+                    Background = new SolidColorBrush(Color.FromRgb(229, 233, 240)),
+                });
             }
-
-            var index = _apps.FindIndex(app =>
-                string.Equals(app.AppId, previousSelection, StringComparison.OrdinalIgnoreCase));
-            AppSelector.SelectedIndex = index >= 0 ? index : (_apps.Count > 0 ? 0 : -1);
         }
-        finally
+    }
+
+    /// <summary>자동 탐색 결과 등으로 특정 앱의 경로 입력값만 갱신합니다(저장 전).</summary>
+    public void SetAppPath(string appId, string path)
+    {
+        var section = FindSection(appId);
+        if (section is not null)
         {
-            _loadingSelection = false;
+            section.PathBox.Text = path;
         }
-
-        LoadSelectedApp();
     }
 
     public void ShowMessage(string message, bool isError)
     {
-        MessageText.Foreground = new System.Windows.Media.SolidColorBrush(
+        MessageText.Foreground = new SolidColorBrush(
             isError
-                ? System.Windows.Media.Color.FromRgb(196, 61, 61)
-                : System.Windows.Media.Color.FromRgb(28, 128, 83));
+                ? Color.FromRgb(196, 61, 61)
+                : Color.FromRgb(28, 128, 83));
         MessageText.Text = message;
     }
 
@@ -111,34 +95,77 @@ public partial class SettingsWindow : Window
         Close();
     }
 
-    private void LoadSelectedApp()
+    private AppSection BuildSection(SettingsAppEntry app)
     {
-        var index = AppSelector.SelectedIndex;
-        if (index < 0 || index >= _apps.Count)
+        var root = new StackPanel();
+        root.Children.Add(new TextBlock
         {
-            return;
-        }
+            FontSize = 16,
+            FontWeight = FontWeights.SemiBold,
+            Text = app.DisplayName,
+        });
 
-        var app = _apps[index];
-        ExecutablePathLabel.Text = $"{app.DisplayName} 실행 파일";
-        ExecutablePath = app.ExecutablePath;
-        TrayMode = app.TrayMode;
-        DiscoverButton.Visibility = app.SupportsDiscovery ? Visibility.Visible : Visibility.Collapsed;
-        MessageText.Text = string.Empty;
+        var pathGrid = new Grid { Margin = new Thickness(0, 8, 0, 0) };
+        pathGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        pathGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        pathGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+        var pathBox = new TextBox
+        {
+            Height = 31,
+            VerticalContentAlignment = VerticalAlignment.Center,
+            Text = app.ExecutablePath,
+        };
+        pathGrid.Children.Add(pathBox);
+
+        var browseButton = new Button
+        {
+            Margin = new Thickness(10, 0, 0, 0),
+            Padding = new Thickness(13, 5, 13, 5),
+            Content = "찾아보기",
+        };
+        browseButton.Click += (_, _) => BrowseForExecutable(app.DisplayName, pathBox);
+        Grid.SetColumn(browseButton, 1);
+        pathGrid.Children.Add(browseButton);
+
+        var discoverButton = new Button
+        {
+            Margin = new Thickness(8, 0, 0, 0),
+            Padding = new Thickness(13, 5, 13, 5),
+            Content = "자동 탐색",
+            Visibility = app.SupportsDiscovery ? Visibility.Visible : Visibility.Collapsed,
+        };
+        discoverButton.Click += (_, _) => DiscoveryRequested?.Invoke(this, app.AppId);
+        Grid.SetColumn(discoverButton, 2);
+        pathGrid.Children.Add(discoverButton);
+        root.Children.Add(pathGrid);
+
+        var hosted = string.Equals(app.TrayMode, "hosted", StringComparison.OrdinalIgnoreCase);
+        var standaloneRadio = new RadioButton
+        {
+            Margin = new Thickness(0, 10, 0, 0),
+            GroupName = $"tray-mode-{app.AppId}",
+            Content = "Standalone — 앱이 자체 트레이 아이콘을 표시합니다.",
+            IsChecked = !hosted,
+        };
+        var hostedRadio = new RadioButton
+        {
+            Margin = new Thickness(0, 4, 0, 0),
+            GroupName = $"tray-mode-{app.AppId}",
+            Content = "Hosted — 앱 트레이 아이콘을 숨기고 Tray Folder가 대신 관리합니다.",
+            IsChecked = hosted,
+        };
+        root.Children.Add(standaloneRadio);
+        root.Children.Add(hostedRadio);
+
+        return new AppSection(app.AppId, root, pathBox, hostedRadio);
     }
 
-    private void OnAppSelectionChanged(object sender, SelectionChangedEventArgs e)
-    {
-        if (!_loadingSelection)
-        {
-            LoadSelectedApp();
-        }
-    }
+    private AppSection? FindSection(string appId) => _sections.FirstOrDefault(
+        section => string.Equals(section.AppId, appId, StringComparison.OrdinalIgnoreCase));
 
-    private void OnBrowseClick(object sender, RoutedEventArgs e)
+    private void BrowseForExecutable(string displayName, TextBox pathBox)
     {
-        var index = AppSelector.SelectedIndex;
-        var displayName = index >= 0 && index < _apps.Count ? _apps[index].DisplayName : "앱";
         var dialog = new OpenFileDialog
         {
             Title = $"{displayName} 실행 파일 선택",
@@ -148,24 +175,22 @@ public partial class SettingsWindow : Window
         };
         if (dialog.ShowDialog(this) == true)
         {
-            ExecutablePath = dialog.FileName;
+            pathBox.Text = dialog.FileName;
             MessageText.Text = string.Empty;
-        }
-    }
-
-    private void OnDiscoverClick(object sender, RoutedEventArgs e)
-    {
-        if (SelectedAppId is string appId)
-        {
-            DiscoveryRequested?.Invoke(this, appId);
         }
     }
 
     private void OnSaveClick(object sender, RoutedEventArgs e)
     {
-        if (SelectedAppId is string appId)
+        var requests = _sections
+            .Select(section => new SettingsSaveRequest(
+                section.AppId,
+                section.PathBox.Text,
+                section.HostedRadio.IsChecked == true ? "hosted" : "standalone"))
+            .ToList();
+        if (requests.Count > 0)
         {
-            SaveRequested?.Invoke(this, new SettingsSaveRequest(appId, ExecutablePath, TrayMode));
+            SaveAllRequested?.Invoke(this, requests);
         }
     }
 
@@ -179,4 +204,6 @@ public partial class SettingsWindow : Window
             Hide();
         }
     }
+
+    private sealed record AppSection(string AppId, StackPanel Root, TextBox PathBox, RadioButton HostedRadio);
 }
