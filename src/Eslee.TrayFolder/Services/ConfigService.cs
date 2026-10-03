@@ -111,9 +111,14 @@ public sealed class ConfigService : IDisposable
         }
 
         config.Apps ??= [];
+        var appIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var app in config.Apps)
         {
-            app.AppId ??= string.Empty;
+            if (app is null || string.IsNullOrWhiteSpace(app.AppId) || !appIds.Add(app.AppId.Trim()))
+            {
+                throw new JsonException("App entries must have unique, nonempty IDs.");
+            }
+            app.AppId = app.AppId.Trim();
             app.DisplayName ??= string.Empty;
             app.ExecutablePath ??= string.Empty;
             app.TrayMode = string.IsNullOrWhiteSpace(app.TrayMode) ? "standalone" : app.TrayMode;

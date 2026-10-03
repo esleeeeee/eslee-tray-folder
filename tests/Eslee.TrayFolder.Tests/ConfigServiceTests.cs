@@ -72,6 +72,22 @@ public sealed class ConfigServiceTests
         Assert.HasCount(5, recovered.Apps);
     }
 
+    [TestMethod]
+    [DataRow("{\"apps\":[null]}")]
+    [DataRow("{\"apps\":[{\"appId\":\"\"}]}")]
+    [DataRow("{\"apps\":[{\"appId\":\"a\"},{\"appId\":\"A\"}]}")]
+    public async Task InvalidAppEntriesRecoverWithOriginalBackup(string json)
+    {
+        using var directory = new TestDirectory();
+        Directory.CreateDirectory(directory.Path);
+        await File.WriteAllTextAsync(System.IO.Path.Combine(directory.Path, "config.json"), json);
+        using var service = new ConfigService(new AppPaths(directory.Path));
+        var result = await service.LoadOrCreateAsync();
+        Assert.IsNotNull(result.RecoveredBackupPath);
+        Assert.AreEqual(json, await File.ReadAllTextAsync(result.RecoveredBackupPath));
+        Assert.HasCount(5, result.Config.Apps);
+    }
+
     private sealed class TestDirectory : IDisposable
     {
         public TestDirectory()

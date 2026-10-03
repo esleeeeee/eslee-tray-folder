@@ -1,12 +1,12 @@
-﻿; eslee Tray Folder installer script (Inno Setup 6).
+; eslee Tray Folder installer script (Inno Setup 6).
 ; Build:
-;   ISCC /DAppVersion=0.1.1 /DSourceDir=..\artifacts\publish installer\eslee-tray-folder.iss
+;   ISCC /DAppVersion=0.1.3 /DSourceDir=..\artifacts\publish installer\eslee-tray-folder.iss
 ;
 ; User data (config, logs) lives under %LOCALAPPDATA%\eslee-tray-folder and is
 ; never touched by the uninstaller, so settings survive reinstalls.
 
 #ifndef AppVersion
-  #define AppVersion "0.1.2"
+  #define AppVersion "0.1.3"
 #endif
 #ifndef SourceDir
   #define SourceDir "..\artifacts\publish"
