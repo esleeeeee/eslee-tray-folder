@@ -333,14 +333,18 @@ public sealed class TrayHostServer : IDisposable
 
                     if (string.Equals(message.Type, TrayPipeProtocol.CommandResultType, StringComparison.Ordinal) &&
                         message.Id is int commandId &&
-                        _pendingCommands.TryRemove(commandId, out var pending))
+                        _pendingCommands.TryGetValue(commandId, out var pending) &&
+                        string.Equals(pending.AppId, registration.AppId, StringComparison.OrdinalIgnoreCase) &&
+                        _pendingCommands.TryRemove(new KeyValuePair<int, PendingCommand>(commandId, pending)))
                     {
                         pending.Completion.TrySetResult(
                             new TrayCommandResult(message.Succeeded ?? false, message.ErrorMessage));
                     }
                     else if (string.Equals(message.Type, TrayPipeProtocol.MenuType, StringComparison.Ordinal) &&
                         message.Id is int menuId &&
-                        _pendingMenuRequests.TryRemove(menuId, out var pendingMenu))
+                        _pendingMenuRequests.TryGetValue(menuId, out var pendingMenu) &&
+                        string.Equals(pendingMenu.AppId, registration.AppId, StringComparison.OrdinalIgnoreCase) &&
+                        _pendingMenuRequests.TryRemove(new KeyValuePair<int, PendingMenuRequest>(menuId, pendingMenu)))
                     {
                         pendingMenu.Completion.TrySetResult(TrayPipeProtocol.ToMenuItems(message));
                     }

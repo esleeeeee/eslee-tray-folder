@@ -10,6 +10,48 @@ public sealed class TrayHostServerTests
     private static readonly TimeSpan TestTimeout = TimeSpan.FromSeconds(10);
 
     [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task OtherClientCannotConsumePendingResponse(bool menu)
+    {
+        var pipeName = CreatePipeName();
+        using var server = new TrayHostServer(pipeName);
+        var registrations = new System.Collections.Concurrent.ConcurrentDictionary<string, TaskCompletionSource>();
+        registrations["app.a"] = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        registrations["app.b"] = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        server.ClientRegistered += (_, app) => registrations[app.AppId].TrySetResult();
+        server.Start();
+        await using var a = CreateClient(pipeName);
+        await using var b = CreateClient(pipeName);
+        await a.ConnectAsync(5000);
+        await b.ConnectAsync(5000);
+        using var ar = CreateReader(a);
+        using var br = CreateReader(b);
+        await using var aw = CreateWriter(a);
+        await using var bw = CreateWriter(b);
+        await aw.WriteLineAsync("""{"type":"register","protocolVersion":1,"appId":"app.a","processId":1}""");
+        await bw.WriteLineAsync("""{"type":"register","protocolVersion":1,"appId":"app.b","processId":2}""");
+        await Task.WhenAll(registrations.Values.Select(value => value.Task)).WaitAsync(TestTimeout);
+        Task request = menu
+            ? server.GetMenuAsync("app.a", TestTimeout, CancellationToken.None)
+            : server.SendCommandAsync("app.a", TrayHostCommand.Activate, TestTimeout, CancellationToken.None);
+        var message = TrayPipeProtocol.TryDeserialize((await ar.ReadLineAsync().WaitAsync(TestTimeout))!);
+        Assert.IsNotNull(message);
+        var response = new TrayPipeMessage { Type = menu ? TrayPipeProtocol.MenuType : TrayPipeProtocol.CommandResultType, Id = message.Id, Succeeded = true };
+        await bw.WriteLineAsync(TrayPipeProtocol.Serialize(response));
+        // A same-stream barrier proves B's forged reply has been processed.
+        var barrier = server.SendCommandAsync("app.b", TrayHostCommand.Activate, TestTimeout, CancellationToken.None);
+        var barrierMessage = TrayPipeProtocol.TryDeserialize((await br.ReadLineAsync().WaitAsync(TestTimeout))!);
+        await bw.WriteLineAsync(TrayPipeProtocol.Serialize(new TrayPipeMessage { Type = TrayPipeProtocol.CommandResultType, Id = barrierMessage!.Id, Succeeded = true }));
+        Assert.IsTrue((await barrier).Succeeded);
+        Assert.IsFalse(request.IsCompleted, "Another registered app must not consume A's response.");
+        await aw.WriteLineAsync(TrayPipeProtocol.Serialize(response));
+        await request.WaitAsync(TestTimeout);
+        if (menu) Assert.IsNotNull(((Task<IReadOnlyList<TrayMenuItem>?>)request).Result);
+        else Assert.IsTrue(((Task<TrayCommandResult>)request).Result.Succeeded);
+    }
+
+    [TestMethod]
     public async Task RegistersClientSendsModeAndRoundTripsActivateCommand()
     {
         var pipeName = CreatePipeName();

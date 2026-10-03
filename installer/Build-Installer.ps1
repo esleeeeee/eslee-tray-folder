@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
 Builds the eslee Tray Folder installer.
 
@@ -10,7 +10,8 @@ Requires: .NET SDK, Inno Setup 6 (ISCC.exe on PATH or in a standard location).
 #>
 [CmdletBinding()]
 param(
-    [string]$Version = "0.1.2"
+    [ValidatePattern('^\d+\.\d+\.\d+$')]
+    [string]$Version = "0.1.3"
 )
 
 Set-StrictMode -Version Latest
@@ -40,11 +41,14 @@ Write-Host "Using ISCC: $iscc"
 
 Write-Host "=== Publishing ==="
 if (Test-Path $publishDir) {
-    Remove-Item $publishDir -Recurse -Force
+    $resolvedPublish = [IO.Path]::GetFullPath($publishDir)
+    $boundary = [IO.Path]::GetFullPath($repoRoot).TrimEnd('\') + '\'
+    if (-not $resolvedPublish.StartsWith($boundary, [StringComparison]::OrdinalIgnoreCase)) { throw 'Publish cleanup escaped repository.' }
+    Remove-Item -LiteralPath $resolvedPublish -Recurse -Force
 }
 
 dotnet publish (Join-Path $repoRoot "src\Eslee.TrayFolder\Eslee.TrayFolder.csproj") `
-    -c Release -r win-x64 --self-contained false `
+    -c Release -r win-x64 --self-contained false -p:Version=$Version `
     -o $publishDir --nologo | Out-Host
 if ($LASTEXITCODE -ne 0) {
     throw "dotnet publish failed."
@@ -57,7 +61,9 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 Write-Host "=== Installer SHA-256 ==="
-Get-ChildItem (Join-Path $artifacts "installer") -Filter "eslee-tray-folder-setup-v$Version.exe" | ForEach-Object {
+$installer = Join-Path $artifacts "installer\eslee-tray-folder-setup-v$Version.exe"
+if (-not (Test-Path -LiteralPath $installer -PathType Leaf)) { throw "Installer was not created: $installer" }
+Get-Item -LiteralPath $installer | ForEach-Object {
     $hash = (Get-FileHash $_.FullName -Algorithm SHA256).Hash
     Write-Host "$hash  $($_.Name)"
     Set-Content -Path "$($_.FullName).sha256" -Value "$hash  $($_.Name)" -Encoding ascii

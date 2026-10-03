@@ -673,13 +673,8 @@ public sealed class TrayFolderController : IDisposable
         // 2단계: 일괄 적용 후 한 번에 저장하고, 연결된 앱에는 모드를 즉시 적용합니다.
         try
         {
-            foreach (var (app, path, mode) in validated)
-            {
-                app.ExecutablePath = path;
-                app.TrayMode = TrayPipeProtocol.FormatTrayMode(mode);
-            }
-
-            await _configService.SaveAsync(_config, _lifetimeCancellation.Token).ConfigureAwait(true);
+            await SettingsTransaction.CommitAsync(_config, validated,
+                _configService.SaveAsync, _lifetimeCancellation.Token).ConfigureAwait(true);
 
             var appliedCount = 0;
             var failedNames = new List<string>();

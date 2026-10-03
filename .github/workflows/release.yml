@@ -1,0 +1,63 @@
+name: Release
+on:
+  push:
+    tags: ['v*']
+permissions:
+  contents: write
+env:
+  DOTNET_CLI_TELEMETRY_OPTOUT: '1'
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: '1'
+  DOTNET_GENERATE_ASPNET_CERTIFICATE: 'false'
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.301
+      - name: Validate release version
+        shell: pwsh
+        run: |
+          $version = $env:GITHUB_REF_NAME.TrimStart('v')
+          $source = ([xml](Get-Content src/Eslee.TrayFolder/Eslee.TrayFolder.csproj -Raw)).Project.PropertyGroup.Version | Where-Object { $_ }
+          if ($version -notmatch '^\d+\.\d+\.\d+$' -or $version -ne $source) { throw 'Tag must match source version.' }
+          if (-not (Test-Path ".github/release-notes/v$version.md")) { throw 'Missing release notes.' }
+      - name: Test app
+        run: dotnet test tests/Eslee.TrayFolder.Tests/Eslee.TrayFolder.Tests.csproj -c Release
+      - name: Test integration library
+        run: dotnet test tests/Eslee.TrayIntegration.Tests/Eslee.TrayIntegration.Tests.csproj -c Release
+      - name: Cross-process Windows IPC smoke
+        run: dotnet run --project tests/Eslee.TrayFolder.OsSmoke/Eslee.TrayFolder.OsSmoke.csproj -c Release
+      - name: Install Inno Setup
+        shell: pwsh
+        run: |
+          choco install innosetup --no-progress -y
+          if ($LASTEXITCODE -ne 0) { throw 'Inno Setup installation failed.' }
+      - name: Build installer
+        shell: pwsh
+        run: ./installer/Build-Installer.ps1 -Version $env:GITHUB_REF_NAME.TrimStart('v')
+      - name: Record release provenance
+        shell: pwsh
+        run: |
+          $version = $env:GITHUB_REF_NAME.TrimStart('v')
+          ./scripts/Write-ReleaseManifest.ps1 -Version $version -AssetPaths @("artifacts/installer/eslee-tray-folder-setup-v$version.exe") -VerifiedChecks @('App safe tests', 'Integration library safe tests', 'Cross-process Windows IPC smoke', 'Publish and Inno installer')
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ github.ref_name }}
+          path: |
+            artifacts/installer/
+            artifacts/release-manifest-*.json
+            artifacts/SHA256SUMS-*.txt
+      - name: Create new GitHub release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $version = $env:GITHUB_REF_NAME.TrimStart('v')
+          $assets = @("artifacts/installer/eslee-tray-folder-setup-v$version.exe", "artifacts/installer/eslee-tray-folder-setup-v$version.exe.sha256", "artifacts/release-manifest-v$version.json", "artifacts/SHA256SUMS-v$version.txt")
+          gh release create "v$version" --verify-tag --title "eslee Tray Folder v$version" --notes-file ".github/release-notes/v$version.md" @assets
+          if ($LASTEXITCODE -ne 0) { throw 'Release creation failed; existing releases are never overwritten.' }
