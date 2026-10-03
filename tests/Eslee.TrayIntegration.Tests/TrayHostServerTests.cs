@@ -232,26 +232,26 @@ public sealed class TrayHostServerTests
         {
             await client.ConnectAsync(5000);
             using var reader = CreateReader(client);
-            var writer = CreateWriter(client);
-            await using (writer.ConfigureAwait(false))
+            // Send directly: disposing a StreamWriter flushes again after the server's
+            // deliberate rejection, which can turn successful EOF into a cleanup failure.
+            var request = Encoding.UTF8.GetBytes(
+                """{"type":"register","protocolVersion":2,"appId":"eslee.autopower","processId":10}""" + "\n");
+            await client.WriteAsync(request);
+
+            string? line = null;
+            try
             {
-                await writer.WriteLineAsync(
-                    """{"type":"register","protocolVersion":2,"appId":"eslee.autopower","processId":10}""");
-
-                string? line = null;
-                try
-                {
-                    line = await reader.ReadLineAsync().WaitAsync(TestTimeout);
-                }
-                catch (IOException)
-                {
-                    // 서버가 연결을 닫으면 파이프에 따라 EOF 대신 IOException이 옵니다.
-                }
-
-                Assert.IsNull(line);
-                Assert.IsFalse(registeredRaised);
-                Assert.IsFalse(server.IsClientConnected("eslee.autopower"));
+                line = await reader.ReadLineAsync().WaitAsync(TestTimeout);
             }
+            catch (IOException ex) when ((ex.HResult & 0xFFFF) is 109 or 232)
+            {
+                // Windows may report ERROR_BROKEN_PIPE / ERROR_NO_DATA instead of EOF.
+                // Other I/O failures and timeouts must still fail this test.
+            }
+
+            Assert.IsNull(line);
+            Assert.IsFalse(registeredRaised);
+            Assert.IsFalse(server.IsClientConnected("eslee.autopower"));
         }
     }
 
